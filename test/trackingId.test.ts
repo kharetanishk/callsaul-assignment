@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isValid, spell, updateId } from "../server/trackingId";
+import { hasValidShape, isValid, spell, updateId } from "../server/trackingId";
 
 test("reads a full ID with phonetic letters", () => {
   const text = "B as in Bravo, D as in Delta, four one eight two zero seven";
@@ -58,4 +58,19 @@ test("spells the ID for reading back", () => {
   expect(spell("BD418207")).toBe("B as in Bravo, D as in Delta, 4 1 8 2 0 7");
   expect(spell("BD41")).toBe("B as in Bravo, D as in Delta, 4 1");
   expect(spell("B")).toBe("B as in Bravo");
+});
+
+test("spells whatever characters it has, even a partial ID", () => {
+  expect(spell("BD")).toBe("B as in Bravo, D as in Delta");
+  expect(spell("B")).toBe("B as in Bravo");
+  expect(spell("D4182")).toBe("D as in Delta, 4 1 8 2");
+});
+
+test("knows when characters can no longer become a valid ID", () => {
+  expect(hasValidShape("")).toBe(true);
+  expect(hasValidShape("BD41")).toBe(true);
+  expect(hasValidShape("B")).toBe(true);
+  expect(hasValidShape("418")).toBe(false);
+  expect(hasValidShape("D4182")).toBe(false);
+  expect(hasValidShape("BD41A")).toBe(false);
 });

@@ -5,8 +5,13 @@ export type Stt = { send: (audio: Uint8Array) => void; close: () => void };
 type Handlers = {
   onInterim: (text: string) => void;
   onFinal: (text: string) => void;
+  // Speech that was heard but too uncertain to trust, for example in loud background noise.
+  onUnclear: (text: string, confidence: number) => void;
   onError: (message: string) => void;
 };
+
+// Wrong characters in a tracking ID are worse than a repeated request, so doubtful speech is dropped.
+const MIN_CONFIDENCE = 0.5;
 
 export function createStt(apiKey: string, handlers: Handlers): Stt {
   const params = new URLSearchParams({
@@ -42,12 +47,16 @@ export function createStt(apiKey: string, handlers: Handlers): Stt {
     if (message.type === "UtteranceEnd") return flush();
     if (message.type !== "Results") return;
 
-    const text: string = message.channel.alternatives[0]?.transcript ?? "";
+    const alternative = message.channel.alternatives[0];
+    const text: string = alternative?.transcript ?? "";
     if (!message.is_final) {
       if (text) handlers.onInterim(`${sentence} ${text}`.trim());
       return;
     }
-    if (text) sentence = `${sentence} ${text}`.trim();
+
+    const confidence: number = alternative?.confidence ?? 1;
+    if (text && confidence < MIN_CONFIDENCE) handlers.onUnclear(text, confidence);
+    else if (text) sentence = `${sentence} ${text}`.trim();
     if (message.speech_final) flush();
   };
 

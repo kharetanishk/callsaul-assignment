@@ -2,7 +2,7 @@ import { bookSlot, callWithRetry, startBooking, withWaitNotice, type LogKind, ty
 import type { Backend, Slot } from "./fakeBackend";
 import type { Llm } from "./llm";
 import type { Session } from "./session";
-import { ID_LENGTH, isValid, spell, updateId } from "./trackingId";
+import { hasValidShape, ID_LENGTH, isValid, spell, updateId } from "./trackingId";
 
 export type Deps = {
   backend: Backend;
@@ -82,10 +82,10 @@ function askId(ctx: Ctx, text: string) {
   const before = session.trackingId;
   const id = applyId(before, text);
 
-  if (id.length >= ID_LENGTH && !isValid(id)) {
+  if (!hasValidShape(id)) {
     session.trackingId = "";
     deps.log("warn", `Heard ${id}, which is not two letters then six digits`);
-    return say("That does not look like a tracking ID. It is two letters followed by six digits. Please say it again.");
+    return say("I think I missed part of that. A tracking ID is two letters followed by six digits. Please say it again from the start.");
   }
 
   session.trackingId = id;

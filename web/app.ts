@@ -19,7 +19,10 @@ async function startCall() {
 
   let mic: Mic;
   try {
-    mic = await startMic((audio) => call?.socket.readyState === WebSocket.OPEN && call.socket.send(audio));
+    mic = await startMic({
+      onAudio: (audio) => call?.socket.readyState === WebSocket.OPEN && call.socket.send(audio),
+      onSpeech: () => call?.player.duck(),
+    });
   } catch {
     ui.addLine("bad", "The microphone is blocked. Allow microphone access in the browser and try again.");
     return;
@@ -58,6 +61,9 @@ function onMessage(message: ServerMessage) {
       return ui.showState(message);
     case "metric":
       return onMetric(message);
+    case "stop_audio":
+      call?.player.stop();
+      return speechSynthesis.cancel();
     case "speak_fallback":
       return speechSynthesis.speak(new SpeechSynthesisUtterance(message.text));
   }

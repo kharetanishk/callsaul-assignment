@@ -37,6 +37,13 @@ test("collects the ID over several turns", async () => {
   expect(session.stage).toBe("CONFIRM_ID");
 });
 
+test("asks again from the start when part of the ID was missed", async () => {
+  const { session, said, talk } = setup();
+  await talk("seasoned broccoli D as in Delta four one eight two zero seven");
+  expect(session.trackingId).toBe("");
+  expect(said.at(-1)).toContain("from the start");
+});
+
 test("fixes one letter when the caller corrects it", async () => {
   const { session, said, talk } = setup();
   await talk("D as in Delta, D as in Delta, four one eight two zero seven");

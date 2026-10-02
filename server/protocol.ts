@@ -9,4 +9,5 @@ export type ServerMessage =
   | { type: "log"; kind: LogKind; text: string }
   | { type: "metric"; name: "voice" | "response"; ms: number }
   | { type: "state"; stage: Stage; trackingId: string; bookings: number }
+  | { type: "stop_audio" }
   | { type: "speak_fallback"; text: string };

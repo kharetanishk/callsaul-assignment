@@ -1,10 +1,15 @@
 // Microphone capture and speaker playback. No knowledge of the page or the server protocol.
+import { createSpeechDetector } from "./vad";
 
 const SEND_RATE = 16000;
 const PLAYBACK_RATE = 24000;
 const FRAME_SAMPLES = 2048;
 // Small delay before the first chunk so playback does not start in the past.
 const PLAYBACK_LEAD_SECONDS = 0.05;
+// How long the agent stays quiet after a possible interruption, if no words follow.
+const DUCK_MS = 1200;
+// Time constant for fading the volume, so cutting it does not click.
+const FADE_SECONDS = 0.015;
 
 // Runs on the audio thread and hands over a fixed-size frame of mic samples at a time.
 const MIC_WORKLET = `
@@ -31,18 +36,29 @@ registerProcessor("mic", Mic);
 `;
 
 export type Mic = { context: AudioContext; stop: () => void };
-export type Player = { play: (pcm16: ArrayBuffer) => void };
+export type Player = {
+  play: (pcm16: ArrayBuffer) => void;
+  // Mutes the agent for a moment. The volume comes back unless stop() is called first.
+  duck: () => void;
+  // Cuts the agent off and throws away everything still queued.
+  stop: () => void;
+};
+type MicHandlers = { onAudio: (pcm16: ArrayBuffer) => void; onSpeech: () => void };
 
-// Asks for the microphone and calls onAudio with 16 kHz PCM16 audio until stopped.
-export async function startMic(onAudio: (pcm16: ArrayBuffer) => void): Promise<Mic> {
+// Asks for the microphone. Sends 16 kHz PCM16 audio to onAudio, and calls onSpeech when the caller starts talking.
+export async function startMic({ onAudio, onSpeech }: MicHandlers): Promise<Mic> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
   });
   const context = new AudioContext();
   await context.audioWorklet.addModule(URL.createObjectURL(new Blob([MIC_WORKLET], { type: "text/javascript" })));
 
+  const detectSpeech = createSpeechDetector(onSpeech);
   const worklet = new AudioWorkletNode(context, "mic");
-  worklet.port.onmessage = (event: MessageEvent<Float32Array>) => onAudio(toPcm16(event.data, context.sampleRate));
+  worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
+    detectSpeech(event.data);
+    onAudio(toPcm16(event.data, context.sampleRate));
+  };
   context.createMediaStreamSource(stream).connect(worklet);
   // Some browsers only run a node that reaches the output. The worklet writes silence, so nothing is heard.
   worklet.connect(context.destination);
@@ -58,7 +74,14 @@ export async function startMic(onAudio: (pcm16: ArrayBuffer) => void): Promise<M
 
 // Plays PCM16 chunks (24 kHz) back to back so speech has no gaps.
 export function createPlayer(context: AudioContext): Player {
+  const output = context.createGain();
+  output.connect(context.destination);
+
+  const playing = new Set<AudioBufferSourceNode>();
   let nextStart = 0;
+  let duckTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const setVolume = (volume: number) => output.gain.setTargetAtTime(volume, context.currentTime, FADE_SECONDS);
 
   return {
     play(pcm16) {
@@ -69,10 +92,28 @@ export function createPlayer(context: AudioContext): Player {
 
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      source.connect(output);
+      source.onended = () => playing.delete(source);
+      playing.add(source);
+
       nextStart = Math.max(context.currentTime + PLAYBACK_LEAD_SECONDS, nextStart);
       source.start(nextStart);
       nextStart += buffer.duration;
+    },
+
+    duck() {
+      if (playing.size === 0) return;
+      setVolume(0);
+      clearTimeout(duckTimer);
+      duckTimer = setTimeout(() => setVolume(1), DUCK_MS);
+    },
+
+    stop() {
+      clearTimeout(duckTimer);
+      playing.forEach((source) => source.stop());
+      playing.clear();
+      nextStart = 0;
+      output.gain.value = 1;
     },
   };
 }

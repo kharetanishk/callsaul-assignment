@@ -4,21 +4,31 @@ import type { Backend } from "./fakeBackend";
 import type { Llm } from "./llm";
 import type { ServerMessage } from "./protocol";
 import { getSession } from "./session";
+import { isInterruption } from "./speech";
 import { createStt } from "./stt";
 import { isValid, updateId } from "./trackingId";
 import { synthesize, TTS_SAMPLE_RATE } from "./tts";
 
 export type Socket = { send: (data: string | Uint8Array) => void };
 export type Call = { sendAudio: (audio: Uint8Array) => void; end: () => void };
-type Shared = { backend: Backend; llm?: Llm; deepgramKey: string };
+type Shared = { backend: Backend; llm?: Llm; deepgramKey: string; silenceMs?: number };
+type Services = { createStt: typeof createStt; synthesize: typeof synthesize };
 
 // Callers pause between characters, so an unfinished ID waits a little longer for the rest.
 const ID_PAUSE_MS = 900;
 const SPEECH_TIMEOUT_MS = 15_000;
 // Extra time after the computed end of speech, to cover network and playback delay.
 const PLAYBACK_MARGIN_MS = 300;
+// If the caller says nothing this long after the agent finishes, the agent says it cannot hear them.
+const SILENCE_MS = 8000;
+const MAX_REMINDERS = 3;
 
-export function startCall(socket: Socket, sessionId: string, { backend, llm, deepgramKey }: Shared): Call {
+export function startCall(
+  socket: Socket,
+  sessionId: string,
+  { backend, llm, deepgramKey, silenceMs = SILENCE_MS }: Shared,
+  services: Services = { createStt, synthesize },
+): Call {
   const session = getSession(sessionId);
 
   let heardText = "";
@@ -27,6 +37,11 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
   let speechQueue: Promise<void> = Promise.resolve();
   let sentencesQueued = 0;
   let speakingUntil = 0;
+  let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+  let reminders = 0;
+  let lastQuestion = "";
+  // Aborted when the caller interrupts, which cancels every sentence that has not finished playing.
+  let interrupted = new AbortController();
 
   const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
   const isSpeaking = () => sentencesQueued > 0 || Date.now() < speakingUntil;
@@ -37,7 +52,7 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
   const deps: Deps = {
     backend,
     llm,
-    say: speak,
+    say: (text) => speak(text),
     log: (kind, text) => {
       send({ type: "log", kind, text });
       sendState();
@@ -45,18 +60,24 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
   };
 
   // Sentences are spoken one after another, in the order they were said.
-  function speak(text: string) {
+  function speak(text: string, isReminder = false) {
+    if (!isReminder) lastQuestion = text;
     send({ type: "agent", text });
     sentencesQueued++;
-    speechQueue = speechQueue.then(() => streamSpeech(text));
+    const cancelled = interrupted.signal;
+    speechQueue = speechQueue.then(() => streamSpeech(text, cancelled));
   }
 
-  async function streamSpeech(text: string) {
+  async function streamSpeech(text: string, cancelled: AbortSignal) {
+    if (cancelled.aborted) return;
+
     const requestedAt = Date.now();
     let firstAudioAt = requestedAt;
     let bytes = 0;
     try {
-      for await (const chunk of synthesize(text, AbortSignal.timeout(SPEECH_TIMEOUT_MS))) {
+      const request = AbortSignal.any([cancelled, AbortSignal.timeout(SPEECH_TIMEOUT_MS)]);
+      for await (const chunk of services.synthesize(text, request)) {
+        if (cancelled.aborted) return;
         if (bytes === 0) {
           firstAudioAt = Date.now();
           send({ type: "metric", name: "voice", ms: firstAudioAt - requestedAt });
@@ -67,17 +88,56 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
         socket.send(chunk);
       }
     } catch (error) {
+      if (cancelled.aborted) return;
       deps.log("warn", `Voice failed (${(error as Error).message}), using the browser voice`);
       send({ type: "speak_fallback", text });
-    } finally {
-      sentencesQueued--;
-      // Playback starts at the first chunk, or right after the previous sentence finishes.
-      const seconds = bytes / 2 / TTS_SAMPLE_RATE;
-      speakingUntil = Math.max(firstAudioAt, speakingUntil) + seconds * 1000 + PLAYBACK_MARGIN_MS;
     }
+
+    if (cancelled.aborted) return;
+    sentencesQueued--;
+    // Playback starts at the first chunk, or right after the previous sentence finishes.
+    const seconds = bytes / 2 / TTS_SAMPLE_RATE;
+    speakingUntil = Math.max(firstAudioAt, speakingUntil) + seconds * 1000 + PLAYBACK_MARGIN_MS;
+    if (sentencesQueued === 0) waitForCaller();
+  }
+
+  // Never leave the caller in silence: if they say nothing, say we cannot hear them and ask again.
+  function waitForCaller() {
+    clearTimeout(silenceTimer);
+    if (reminders >= MAX_REMINDERS || session.stage === "DONE") return;
+    silenceTimer = setTimeout(remind, silenceMs + Math.max(0, speakingUntil - Date.now()));
+  }
+
+  function remind() {
+    if (isSpeaking() || session.busy) return waitForCaller();
+    reminders++;
+    deps.log("warn", "The caller said nothing, so the agent asked again");
+    speak(`Sorry, I cannot hear you. ${lastQuestion}`, true);
+  }
+
+  // The caller spoke over the agent: stop talking now and forget the rest of what was queued.
+  function interrupt() {
+    interrupted.abort();
+    interrupted = new AbortController();
+    sentencesQueued = 0;
+    speakingUntil = 0;
+    send({ type: "stop_audio" });
+    deps.log("info", "Caller spoke over the agent, so the agent stopped talking");
+  }
+
+  function onInterim(text: string) {
+    clearTimeout(silenceTimer);
+    send({ type: "interim", text });
+    if (isSpeaking() && isInterruption(text, session.lastSaid)) interrupt();
   }
 
   function onHeard(text: string) {
+    reminders = 0;
+    clearTimeout(silenceTimer);
+    if (isSpeaking()) {
+      if (!isInterruption(text, session.lastSaid)) return deps.log("info", `Ignored "${text}", it was only noise or an echo`);
+      interrupt();
+    }
     heardText = `${heardText} ${text}`.trim();
     heardAt = Date.now();
     const idUnfinished = session.stage === "ASK_ID" && !isValid(updateId(session.trackingId, heardText));
@@ -85,10 +145,15 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
     holdTimer = setTimeout(deliver, idUnfinished ? ID_PAUSE_MS : 0);
   }
 
+  // Heard something, but too unclear to trust. Ask again instead of staying silent.
+  function onUnclear(text: string, confidence: number) {
+    deps.log("warn", `Could not make out "${text}" (confidence ${confidence.toFixed(2)})`);
+    if (!isSpeaking() && !heardText) speak("Sorry, there is a lot of noise on the line. Could you say that again?", true);
+  }
+
   async function deliver() {
     const text = heardText;
     heardText = "";
-    if (isSpeaking()) return deps.log("warn", `Ignored "${text}" because the agent was speaking`);
 
     send({ type: "user", text });
     try {
@@ -100,14 +165,22 @@ export function startCall(socket: Socket, sessionId: string, { backend, llm, dee
     sendState();
   }
 
-  const stt = createStt(deepgramKey, {
-    onInterim: (text) => send({ type: "interim", text }),
+  const stt = services.createStt(deepgramKey, {
+    onInterim,
     onFinal: onHeard,
+    onUnclear,
     onError: (message) => deps.log("bad", message),
   });
 
   greet(session, deps);
   sendState();
 
-  return { sendAudio: stt.send, end: stt.close };
+  return {
+    sendAudio: stt.send,
+    end: () => {
+      clearTimeout(silenceTimer);
+      clearTimeout(holdTimer);
+      stt.close();
+    },
+  };
 }
