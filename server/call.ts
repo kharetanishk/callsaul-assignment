@@ -1,7 +1,8 @@
 // One phone call: caller audio in, agent speech out.
 import { greet, handleTurn, type Deps } from "./brain";
-import type { Backend } from "./fakeBackend";
+import type { Backend, CallKind, Mode } from "./fakeBackend";
 import type { Llm } from "./llm";
+import { log, type Level, type Scope } from "./logger";
 import type { ServerMessage } from "./protocol";
 import { getSession } from "./session";
 import { isInterruption } from "./speech";
@@ -23,6 +24,15 @@ const PLAYBACK_MARGIN_MS = 300;
 const SILENCE_MS = 8000;
 const MAX_REMINDERS = 3;
 
+const BACKEND_CALL_NAMES: Record<CallKind, string> = { slots: "Slot lookup", book: "Booking request", status: "Status check" };
+const BACKEND_BEHAVIOURS: Record<Mode, string> = {
+  ok: "answered normally",
+  slow: "is answering slowly (about 6 seconds)",
+  fail: "returned an error and saved nothing",
+  lostack: "saved the booking but the reply will be lost",
+  hang: "will never answer",
+};
+
 export function startCall(
   socket: Socket,
   sessionId: string,
@@ -43,6 +53,8 @@ export function startCall(
   // Aborted when the caller interrupts, which cancels every sentence that has not finished playing.
   let interrupted = new AbortController();
 
+  const callId = sessionId.slice(0, 4);
+  const note = (scope: Scope, text: string, level: Level = "info") => log(scope, text, level, callId);
   const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
   const isSpeaking = () => sentencesQueued > 0 || Date.now() < speakingUntil;
 
@@ -53,16 +65,27 @@ export function startCall(
     backend,
     llm,
     say: (text) => speak(text),
-    log: (kind, text) => {
-      send({ type: "log", kind, text });
-      sendState();
-    },
+    log: (kind, text) => tell(kind, text),
   };
+
+  // Shows a line in the browser timeline and in the server terminal.
+  function tell(kind: Level, text: string, scope: Scope = "BRAIN") {
+    send({ type: "log", kind, text });
+    note(scope, text, kind);
+    sendState();
+  }
+
+  const stopListening = backend.subscribe(({ call, mode }) => {
+    const text = `${BACKEND_CALL_NAMES[call]}: the booking system ${BACKEND_BEHAVIOURS[mode]}`;
+    send({ type: "backend", mode, text });
+    note("BACKEND", text, mode === "ok" ? "info" : "warn");
+  });
 
   // Sentences are spoken one after another, in the order they were said.
   function speak(text: string, isReminder = false) {
     if (!isReminder) lastQuestion = text;
     send({ type: "agent", text });
+    note("AGENT", text);
     sentencesQueued++;
     const cancelled = interrupted.signal;
     speechQueue = speechQueue.then(() => streamSpeech(text, cancelled));
@@ -81,7 +104,12 @@ export function startCall(
         if (bytes === 0) {
           firstAudioAt = Date.now();
           send({ type: "metric", name: "voice", ms: firstAudioAt - requestedAt });
-          if (heardAt) send({ type: "metric", name: "response", ms: firstAudioAt - heardAt });
+          note("VOICE", `first sound after ${firstAudioAt - requestedAt} ms`);
+          if (heardAt) {
+            const gap = firstAudioAt - heardAt;
+            send({ type: "metric", name: "response", ms: gap });
+            note("VOICE", `reply started ${(gap / 1000).toFixed(1)} s after the caller stopped speaking`, gap < 1500 ? "good" : gap < 3000 ? "warn" : "bad");
+          }
           heardAt = 0;
         }
         bytes += chunk.length;
@@ -89,7 +117,7 @@ export function startCall(
       }
     } catch (error) {
       if (cancelled.aborted) return;
-      deps.log("warn", `Voice failed (${(error as Error).message}), using the browser voice`);
+      tell("warn", `Voice failed (${(error as Error).message}), using the browser voice`, "VOICE");
       send({ type: "speak_fallback", text });
     }
 
@@ -111,7 +139,7 @@ export function startCall(
   function remind() {
     if (isSpeaking() || session.busy) return waitForCaller();
     reminders++;
-    deps.log("warn", "The caller said nothing, so the agent asked again");
+    tell("warn", "The caller said nothing, so the agent asked again", "CALL");
     speak(`Sorry, I cannot hear you. ${lastQuestion}`, true);
   }
 
@@ -122,7 +150,7 @@ export function startCall(
     sentencesQueued = 0;
     speakingUntil = 0;
     send({ type: "stop_audio" });
-    deps.log("info", "Caller spoke over the agent, so the agent stopped talking");
+    tell("info", "Caller spoke over the agent, so the agent stopped talking", "BARGE-IN");
   }
 
   function onInterim(text: string) {
@@ -132,10 +160,11 @@ export function startCall(
   }
 
   function onHeard(text: string) {
+    note("HEARD", `"${text}"`);
     reminders = 0;
     clearTimeout(silenceTimer);
     if (isSpeaking()) {
-      if (!isInterruption(text, session.lastSaid)) return deps.log("info", `Ignored "${text}", it was only noise or an echo`);
+      if (!isInterruption(text, session.lastSaid)) return tell("info", `Ignored "${text}", it was only noise or an echo`, "LISTEN");
       interrupt();
     }
     heardText = `${heardText} ${text}`.trim();
@@ -147,7 +176,7 @@ export function startCall(
 
   // Heard something, but too unclear to trust. Ask again instead of staying silent.
   function onUnclear(text: string, confidence: number) {
-    deps.log("warn", `Could not make out "${text}" (confidence ${confidence.toFixed(2)})`);
+    tell("warn", `Could not make out "${text}" (confidence ${confidence.toFixed(2)})`, "LISTEN");
     if (!isSpeaking() && !heardText) speak("Sorry, there is a lot of noise on the line. Could you say that again?", true);
   }
 
@@ -159,7 +188,7 @@ export function startCall(
     try {
       await handleTurn(session, text, deps);
     } catch (error) {
-      deps.log("bad", `Something went wrong: ${(error as Error).message}`);
+      tell("bad", `Something went wrong: ${(error as Error).message}`, "CALL");
       speak("Sorry, something went wrong on my side. Could you say that again?");
     }
     sendState();
@@ -169,15 +198,18 @@ export function startCall(
     onInterim,
     onFinal: onHeard,
     onUnclear,
-    onError: (message) => deps.log("bad", message),
+    onError: (message) => tell("bad", message, "LISTEN"),
   });
 
+  note("CALL", `started, session ${sessionId}`, "good");
   greet(session, deps);
   sendState();
 
   return {
     sendAudio: stt.send,
     end: () => {
+      note("CALL", `ended, step reached: ${session.stage}, bookings made: ${backend.bookings.size}`, "good");
+      stopListening();
       clearTimeout(silenceTimer);
       clearTimeout(holdTimer);
       stt.close();

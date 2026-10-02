@@ -4,6 +4,9 @@ export type Mode = "ok" | "slow" | "fail" | "lostack" | "hang";
 export type Slot = { id: string; label: string; day: string; period: "morning" | "afternoon" | "evening" };
 export type BackendBooking = { ref: string; key: string; slotId: string };
 
+export type CallKind = "slots" | "book" | "status";
+export type BackendEvent = { call: CallKind; mode: Mode };
+
 type Options = { seed?: number; normalMs?: number; slowMs?: number; failMs?: number };
 
 // ok: answers fast. slow: answers late. fail: errors, nothing saved.
@@ -41,23 +44,34 @@ function slotList(): Slot[] {
 export function createBackend({ seed, normalMs = 300, slowMs = 6000, failMs = 500 }: Options = {}) {
   const random = seed === undefined ? Math.random : seededRandom(seed);
   const bookings = new Map<string, BackendBooking>();
+  const listeners = new Set<(event: BackendEvent) => void>();
 
   const backend = {
     bookings,
-    // Forces every call into one mode. Used by the stress test buttons.
+    // Forces every booking request into one mode. Used by the stress test buttons.
+    // Looking up slots and checking a booking stay normal, so the agent can still recover.
     forced: undefined as Mode | undefined,
     // Modes used by the next calls, in order. Used by tests.
     script: [] as Mode[],
 
-    pickMode(): Mode {
-      return backend.script.shift() ?? backend.forced ?? MODES[Math.floor(random() * MODES.length)]!;
+    // Tells the listener what the backend decided to do, before it does it.
+    subscribe(listener: (event: BackendEvent) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
 
-    slots: () => act(slotList),
+    pickMode(kind: CallKind = "book"): Mode {
+      const scripted = backend.script.shift();
+      if (scripted) return scripted;
+      if (backend.forced) return kind === "book" ? backend.forced : "ok";
+      return MODES[Math.floor(random() * MODES.length)]!;
+    },
+
+    slots: () => act("slots", slotList),
 
     // Booking the same key twice returns the first booking.
     book: (key: string, slotId: string) =>
-      act(() => {
+      act("book", () => {
         const existing = bookings.get(key);
         if (existing) return existing;
         const booking = { ref: `CR-${7000 + bookings.size + 1}`, key, slotId };
@@ -65,11 +79,12 @@ export function createBackend({ seed, normalMs = 300, slowMs = 6000, failMs = 50
         return booking;
       }),
 
-    status: (key: string) => act(() => bookings.get(key) ?? null),
+    status: (key: string) => act("status", () => bookings.get(key) ?? null),
   };
 
-  async function act<T>(run: () => T): Promise<T> {
-    const mode = backend.pickMode();
+  async function act<T>(call: CallKind, run: () => T): Promise<T> {
+    const mode = backend.pickMode(call);
+    listeners.forEach((listener) => listener({ call, mode }));
     if (mode === "hang") return new Promise<T>(() => {});
     if (mode === "fail") {
       await sleep(failMs);

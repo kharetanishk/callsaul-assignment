@@ -7,40 +7,7 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-<main>
-  <h1>Reschedule a Delivery</h1>
-  <p class="subtitle">Talk to the agent to move your courier delivery to a new slot.</p>
-
-  <section class="card stats" aria-label="Call summary">
-    <div class="stat"><small>Connection</small><strong id="connection"></strong></div>
-    <div class="stat"><small>Step</small><strong id="step"></strong></div>
-    <div class="stat"><small>Tracking ID</small><strong id="tracking-id" class="mono"></strong></div>
-    <div class="stat"><small>Response time</small><strong id="response"></strong></div>
-    <div class="stat"><small>Bookings made</small><strong id="bookings"></strong></div>
-  </section>
-
-  <section class="card row">
-    <button type="button" id="call-button" class="primary"></button>
-    <span id="interim" class="interim" aria-live="polite"></span>
-  </section>
-
-  <section class="card row" aria-label="Stress test">
-    <span class="label">Make the booking system:</span>
-    <button type="button" class="chaos" data-mode="random">Behave randomly</button>
-    <button type="button" class="chaos" data-mode="ok">Always work</button>
-    <button type="button" class="chaos" data-mode="slow">Be slow (6 s)</button>
-    <button type="button" class="chaos" data-mode="fail">Fail</button>
-    <button type="button" class="chaos" data-mode="lostack">Lose the reply</button>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Call timeline</h2>
-      <label><input type="checkbox" id="technical-toggle"> Show technical details</label>
-    </div>
-    <div id="timeline" aria-live="polite"></div>
-  </section>
-</main>
-<script type="module" src="./app.ts"></script>
+  <div id="root"></div>
+  <script type="module" src="./main.tsx"></script>
 </body>
 </html>

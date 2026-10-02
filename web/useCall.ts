@@ -1,0 +1,147 @@
+// Everything about one call that the page needs: what the agent is doing, the timeline and the summary numbers.
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { LogKind } from "../server/booking";
+import type { ServerMessage } from "../server/protocol";
+import type { Stage } from "../server/session";
+import { createPlayer, startMic, type Mic, type Player } from "./audio";
+import { PREVIEW_INTERIM, PREVIEW_SUMMARY, PREVIEW_TIMELINE } from "./preview";
+
+export type Levels = { agent: () => number; caller: () => number };
+export type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
+
+export type TimelineItem = {
+  id: number;
+  seconds: number;
+  kind: "user" | "agent" | "backend" | LogKind;
+  text: string;
+  technical?: boolean;
+};
+
+export type Summary = { stage?: Stage; trackingId: string; bookings: number; responseMs?: number };
+type ActiveCall = { socket: WebSocket; mic: Mic; player: Player };
+
+const EMPTY_SUMMARY: Summary = { trackingId: "", bookings: 0 };
+// The agent often pauses briefly between sentences. It only counts as finished speaking after this long.
+const SPEAKING_GAP_MS = 350;
+
+// ?phase=speaking shows the page in that state, with sample content and without a call, to preview the design.
+const previewPhase = new URLSearchParams(location.search).get("phase") as Phase | null;
+
+export function useCall() {
+  const [phase, setPhase] = useState<Phase>(previewPhase ?? "idle");
+  const [summary, setSummary] = useState<Summary>(previewPhase ? PREVIEW_SUMMARY : EMPTY_SUMMARY);
+  const [timeline, setTimeline] = useState<TimelineItem[]>(previewPhase ? PREVIEW_TIMELINE : []);
+  const [interim, setInterim] = useState(previewPhase === "listening" ? PREVIEW_INTERIM : "");
+
+  const call = useRef<ActiveCall | undefined>(undefined);
+  const asking = useRef(false);
+  const startedAt = useRef(0);
+  const nextId = useRef(0);
+  const gapTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const addToTimeline = useCallback((kind: TimelineItem["kind"], text: string, technical = false) => {
+    const seconds = Math.floor((Date.now() - startedAt.current) / 1000);
+    setTimeline((items) => [...items, { id: nextId.current++, seconds, kind, text, technical }]);
+  }, []);
+
+  const onMessage = useCallback(
+    (message: ServerMessage) => {
+      switch (message.type) {
+        case "user":
+          setInterim("");
+          setPhase("thinking");
+          return addToTimeline("user", message.text);
+        case "agent":
+          return addToTimeline("agent", message.text);
+        case "log":
+          return addToTimeline(message.kind, message.text);
+        case "backend":
+          return addToTimeline("backend", message.text, message.mode === "ok");
+        case "interim":
+          return setInterim(message.text);
+        case "state":
+          setSummary((old) => ({ ...old, stage: message.stage, trackingId: message.trackingId, bookings: message.bookings }));
+          return setPhase((current) => (current === "connecting" ? "listening" : current));
+        case "metric":
+          if (message.name === "response") setSummary((old) => ({ ...old, responseMs: message.ms }));
+          return;
+        case "stop_audio":
+          call.current?.player.stop();
+          speechSynthesis.cancel();
+          return setPhase("listening");
+        case "speak_fallback": {
+          const speech = new SpeechSynthesisUtterance(message.text);
+          speech.onend = () => setPhase("listening");
+          setPhase("speaking");
+          return speechSynthesis.speak(speech);
+        }
+      }
+    },
+    [addToTimeline],
+  );
+
+  const end = useCallback(() => {
+    const ended = call.current;
+    call.current = undefined;
+    clearTimeout(gapTimer.current);
+    ended?.socket.close();
+    ended?.mic.stop();
+    speechSynthesis.cancel();
+    setPhase("idle");
+    setInterim("");
+  }, []);
+
+  const start = useCallback(async () => {
+    if (call.current || asking.current) return;
+    asking.current = true;
+    setPhase("connecting");
+
+    let mic: Mic;
+    try {
+      mic = await startMic({
+        onAudio: (audio) => call.current?.socket.readyState === WebSocket.OPEN && call.current.socket.send(audio),
+        onSpeech: () => call.current?.player.duck(),
+      });
+    } catch {
+      setPhase("idle");
+      addToTimeline("bad", "The microphone is blocked. Allow microphone access in the browser and try again.");
+      return;
+    } finally {
+      asking.current = false;
+    }
+
+    startedAt.current = Date.now();
+    setTimeline([]);
+    setSummary(EMPTY_SUMMARY);
+
+    const player = createPlayer(mic.context, {
+      onPlaying: () => {
+        clearTimeout(gapTimer.current);
+        setPhase("speaking");
+      },
+      onIdle: () => {
+        gapTimer.current = setTimeout(() => setPhase((current) => (current === "speaking" ? "listening" : current)), SPEAKING_GAP_MS);
+      },
+    });
+
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${location.host}/ws?session=${crypto.randomUUID()}`);
+    socket.binaryType = "arraybuffer";
+    socket.onmessage = (event) => (typeof event.data === "string" ? onMessage(JSON.parse(event.data)) : player.play(event.data));
+    socket.onclose = end;
+    call.current = { socket, mic, player };
+  }, [addToTimeline, end, onMessage]);
+
+  useEffect(() => end, [end]);
+
+  // How loud each side is right now. The orb reads these many times a second, so they are not React state.
+  const levels = useRef<Levels>({
+    agent: () => call.current?.player.level() ?? 0,
+    caller: () => call.current?.mic.level() ?? 0,
+  }).current;
+
+  // While the booking is being made the agent is working even if it is quiet.
+  const shown: Phase = phase === "listening" && summary.stage === "BOOKING" ? "thinking" : phase;
+
+  return { phase: shown, ...summary, timeline, interim, start, end, levels };
+}

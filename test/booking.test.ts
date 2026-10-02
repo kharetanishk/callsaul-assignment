@@ -4,7 +4,7 @@ import { createBackend, type Mode } from "../server/fakeBackend";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const fast = { timeoutMs: 30, backoffMs: 1, waitFirstMs: 10, waitEveryMs: 1000 };
+const fast = { retries: 2, timeoutMs: 30, backoffMs: 1, waitFirstMs: 10, waitEveryMs: 1000 };
 
 function setup(script: Mode[]) {
   const backend = createBackend({ normalMs: 1, slowMs: 60, failMs: 1 });
@@ -91,4 +91,55 @@ test("offers slots with an id and a label", async () => {
   expect(slots.length).toBeGreaterThanOrEqual(3);
   expect(slots[0]).toHaveProperty("id");
   expect(slots[0]).toHaveProperty("label");
+});
+
+// What each stress test button should lead to, with the real default timings scaled down.
+function forced(mode: Mode) {
+  const backend = createBackend({ normalMs: 1, slowMs: 60, failMs: 1 });
+  backend.forced = mode;
+  return { backend, booking: startBooking("BD418207", "slot-1", "slot-1") };
+}
+const patient = { timeoutMs: 120, retries: 1, backoffMs: 1, waitFirstMs: 10, waitEveryMs: 1000 };
+
+test("stress option slow: every booking request is slow but it still succeeds, once", async () => {
+  const { backend, booking } = forced("slow");
+  await bookSlot(backend, booking, patient);
+  expect(booking.status).toBe("done");
+  expect(backend.bookings.size).toBe(1);
+});
+
+test("stress option fail: nothing is saved and the agent knows for sure", async () => {
+  const { backend, booking } = forced("fail");
+  await bookSlot(backend, booking, patient);
+  expect(booking.status).toBe("failed");
+  expect(backend.bookings.size).toBe(0);
+});
+
+test("stress option lose the reply: saved exactly once and the agent finds it", async () => {
+  const { backend, booking } = forced("lostack");
+  await bookSlot(backend, booking, patient);
+  expect(booking.status).toBe("done");
+  expect(backend.bookings.size).toBe(1);
+});
+
+test("stress option never answers: gives up cleanly, nothing saved", async () => {
+  const { backend, booking } = forced("hang");
+  await bookSlot(backend, booking, { ...patient, timeoutMs: 30 });
+  expect(booking.status).toBe("failed");
+  expect(backend.bookings.size).toBe(0);
+});
+
+test("a stress option does not break looking up slots", async () => {
+  for (const mode of ["slow", "fail", "lostack", "hang"] as const) {
+    const { backend } = forced(mode);
+    expect((await backend.slots()).length).toBeGreaterThan(0);
+  }
+});
+
+test("tells listeners what the backend chose to do", async () => {
+  const { backend, booking } = forced("fail");
+  const seen: string[] = [];
+  backend.subscribe((event) => seen.push(`${event.call}:${event.mode}`));
+  await bookSlot(backend, booking, patient);
+  expect(seen).toEqual(["book:fail", "book:fail", "status:ok"]);
 });

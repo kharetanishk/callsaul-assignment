@@ -33,9 +33,9 @@ export async function callWithRetry<T>(
   call: () => Promise<T>,
   what: string,
   options: Options = {},
-  attempts = (options.retries ?? 2) + 1,
+  attempts = (options.retries ?? 1) + 1,
 ): Promise<T | undefined> {
-  const { timeoutMs = 4000, backoffMs = 300, onEvent } = options;
+  const { timeoutMs = 8000, backoffMs = 300, onEvent } = options;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       onEvent?.("info", `${what} (attempt ${attempt} of ${attempts})`);

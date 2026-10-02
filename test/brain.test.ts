@@ -4,7 +4,7 @@ import { createBackend, type Mode } from "../server/fakeBackend";
 import type { Llm } from "../server/llm";
 import { newSession } from "../server/session";
 
-const fast = { timeoutMs: 30, backoffMs: 1, waitFirstMs: 10, waitEveryMs: 1000 };
+const fast = { retries: 2, timeoutMs: 30, backoffMs: 1, waitFirstMs: 10, waitEveryMs: 1000 };
 const FULL_ID = "B as in Bravo, D as in Delta, four one eight two zero seven";
 
 function setup(script: Mode[] = [], llm?: Llm, timing = fast) {

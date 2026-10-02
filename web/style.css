@@ -1,120 +1,131 @@
-/* Colours. Dark mode follows the system setting. */
+@import "tailwindcss";
+
+/* The Dusk theme is switched on by data-theme="dusk" on the page. Use it as dusk:class. */
+@custom-variant dusk (&:where([data-theme="dusk"], [data-theme="dusk"] *));
+
+/* ---------- Colours ---------- */
+/* Warm peach and gold on a pearly background. Dusk keeps the same warmth on a deep blue. */
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --text: #1b1f27;
-  --muted: #667085;
-  --line: #e3e6eb;
-  --blue: #2563eb;
-  --green: #15803d;
-  --amber: #b45309;
-  --red: #b91c1c;
+  --ink: #43302a;
+  --muted: #8f7a6e;
+  --glass-top: rgba(255, 255, 255, 0.72);
+  --glass-bottom: rgba(255, 244, 235, 0.38);
+  --glass-line: rgba(255, 255, 255, 0.85);
+  --shadow: rgba(176, 108, 62, 0.28);
+  --tile: rgba(160, 120, 90, 0.1);
+  --good: #3f9a62;
+  --warn: #d38a2d;
+  --bad: #d4574d;
+  --scene-a: #ffe1cc;
+  --scene-b: #e6e0f3;
+  --scene-c: #ffd6b3;
+  --scene-base-1: #fdf4ec;
+  --scene-base-2: #ece6f2;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1218;
-    --card: #171b23;
-    --text: #e8ebf1;
-    --muted: #98a1b3;
-    --line: #262c38;
-    --blue: #6b9bff;
-    --green: #4ade80;
-    --amber: #fbbf24;
-    --red: #f87171;
+:root[data-theme="dusk"] {
+  --ink: #f7ece3;
+  --muted: #b8a698;
+  --glass-top: rgba(255, 255, 255, 0.11);
+  --glass-bottom: rgba(255, 240, 225, 0.04);
+  --glass-line: rgba(255, 226, 170, 0.26);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --tile: rgba(255, 235, 215, 0.07);
+  --good: #6fd197;
+  --warn: #f2b45a;
+  --bad: #ff8379;
+  --scene-a: #4a3a3f;
+  --scene-b: #2a3550;
+  --scene-c: #5a4332;
+  --scene-base-1: #151824;
+  --scene-base-2: #10131c;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--glass-line);
+  --color-tile: var(--tile);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-gold: #e8b04a;
+  --color-gold-bright: #ffe2a0;
+  --color-peach: #ffb68c;
+  --color-rose: #ff958b;
+  --shadow-glass: 0 30px 60px -24px var(--shadow);
+  --font-sans: ui-rounded, "SF Pro Rounded", "SF Pro Text", Inter, system-ui, sans-serif;
+
+  --animate-rise: rise 0.4s ease-out;
+  --animate-pop: pop 0.35s cubic-bezier(0.3, 1.6, 0.5, 1);
+  --animate-float: float 22s ease-in-out infinite;
+  --animate-live: live 2s ease-in-out infinite;
+  --animate-current: current 2s ease-in-out infinite;
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes pop { from { opacity: 0; transform: scale(0.6) translateY(6px); } }
+@keyframes float { 50% { transform: translate(40px, -30px) scale(1.08); } }
+@keyframes live { 50% { box-shadow: 0 0 0 8px rgba(63, 154, 98, 0); } }
+@keyframes current { 50% { box-shadow: 0 0 0 9px rgba(255, 182, 140, 0), 0 4px 10px -2px var(--shadow); } }
+
+/* ---------- Page ---------- */
+@layer base {
+  body {
+    min-height: 100vh;
+    color: var(--ink);
+    background: linear-gradient(160deg, var(--scene-base-1), var(--scene-base-2)) fixed;
   }
 }
 
-/* Page */
-* { box-sizing: border-box; }
+/* ---------- Surfaces that need more than a few utilities ---------- */
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 system-ui, sans-serif;
+/* Frosted glass. */
+@utility glass {
+  background: linear-gradient(145deg, var(--glass-top), var(--glass-bottom));
+  border: 1px solid var(--glass-line);
+  backdrop-filter: blur(26px) saturate(150%);
+  box-shadow: var(--shadow-glass), 0 2px 0 rgba(255, 255, 255, 0.5) inset, 0 -1px 0 rgba(255, 255, 255, 0.15) inset;
 }
 
-main {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 24px 16px 64px;
+/* A thin band of golden light that travels around the edge, plus a soft inner glow. */
+@property --angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+@keyframes orbit { to { --angle: 360deg; } }
+
+@utility glow-border {
+  position: relative;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    padding: 2.5px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: conic-gradient(from var(--angle), rgba(232, 176, 74, 0.25) 0, transparent 35%, rgba(255, 214, 140, 0.5) 62%, #ffe2a0 78%, #fff 84%, #ffc561 90%, rgba(232, 176, 74, 0.25) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: orbit 7s linear infinite;
+  }
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: 0 0 56px -4px rgba(255, 186, 100, 0.6), inset 0 0 36px -10px rgba(255, 214, 150, 0.6);
+  }
 }
 
-h1 { font-size: 22px; margin: 0 0 4px; }
-h2 { font-size: 15px; margin: 0; }
-.subtitle { color: var(--muted); margin: 0 0 20px; }
-.mono { font-family: ui-monospace, monospace; letter-spacing: 0.12em; }
-
-/* Cards and rows */
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 16px;
+/* A raised golden button with a lit top edge. */
+@utility gold-surface {
+  color: #5a3416;
+  background: linear-gradient(180deg, #ffe7b3, #f5bd62 55%, #eaa24a);
+  box-shadow: 0 14px 28px -10px rgba(217, 133, 67, 0.7), 0 2px 0 rgba(255, 255, 255, 0.8) inset, 0 -4px 8px rgba(190, 100, 50, 0.3) inset;
 }
 
-.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.label { color: var(--muted); font-size: 13px; margin-right: 4px; }
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
-.card-head label { color: var(--muted); font-size: 13px; cursor: pointer; }
-
-/* Summary strip */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; }
-.stat small { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-.stat strong { font-size: 16px; font-weight: 600; }
-
-.dot { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 50%; background: var(--muted); }
-.dot.good { background: var(--green); }
-.dot.warn { background: var(--amber); }
-.dot.bad { background: var(--red); }
-
-/* Buttons */
-button {
-  font: inherit;
-  color: var(--text);
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-button.primary { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600; }
-button.active { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
-
-.interim { min-height: 22px; color: var(--muted); font-style: italic; }
-
-/* Timeline */
-#timeline { max-height: 460px; overflow-y: auto; }
-.empty { color: var(--muted); margin: 0; }
-
-.line {
-  display: grid;
-  grid-template-columns: 44px 1fr;
-  gap: 8px;
-  margin-bottom: 4px;
-  padding: 7px 0 7px 10px;
-  border-left: 3px solid var(--line);
-}
-.line.info { border-color: var(--blue); }
-.line.good { border-color: var(--green); }
-.line.warn { border-color: var(--amber); }
-.line.bad { border-color: var(--red); }
-
-.line .time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
-.line .who { font-weight: 600; }
-.line .detail { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
-
-/* Lines that only exist for technical details are hidden until the toggle is on. */
-.line.technical { display: none; }
-#timeline.show-technical .line.technical { display: grid; }
-.line .detail { display: none; }
-#timeline.show-technical .line .detail { display: block; }

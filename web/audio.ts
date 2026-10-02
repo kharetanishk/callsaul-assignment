@@ -10,6 +10,8 @@ const PLAYBACK_LEAD_SECONDS = 0.05;
 const DUCK_MS = 1200;
 // Time constant for fading the volume, so cutting it does not click.
 const FADE_SECONDS = 0.015;
+// Speech is quiet on a 0 to 1 scale, so loudness is boosted to use more of the range.
+const LEVEL_GAIN = 4;
 
 // Runs on the audio thread and hands over a fixed-size frame of mic samples at a time.
 const MIC_WORKLET = `
@@ -35,14 +37,22 @@ class Mic extends AudioWorkletProcessor {
 registerProcessor("mic", Mic);
 `;
 
-export type Mic = { context: AudioContext; stop: () => void };
+export type Mic = {
+  context: AudioContext;
+  // How loud the caller is right now, from 0 to 1.
+  level: () => number;
+  stop: () => void;
+};
 export type Player = {
   play: (pcm16: ArrayBuffer) => void;
+  // How loud the agent is right now, from 0 to 1.
+  level: () => number;
   // Mutes the agent for a moment. The volume comes back unless stop() is called first.
   duck: () => void;
   // Cuts the agent off and throws away everything still queued.
   stop: () => void;
 };
+type PlayerOptions = { onPlaying: () => void; onIdle: () => void };
 type MicHandlers = { onAudio: (pcm16: ArrayBuffer) => void; onSpeech: () => void };
 
 // Asks for the microphone. Sends 16 kHz PCM16 audio to onAudio, and calls onSpeech when the caller starts talking.
@@ -59,12 +69,16 @@ export async function startMic({ onAudio, onSpeech }: MicHandlers): Promise<Mic>
     detectSpeech(event.data);
     onAudio(toPcm16(event.data, context.sampleRate));
   };
-  context.createMediaStreamSource(stream).connect(worklet);
+  const source = context.createMediaStreamSource(stream);
+  source.connect(worklet);
+  const meter = createMeter(context);
+  source.connect(meter.node);
   // Some browsers only run a node that reaches the output. The worklet writes silence, so nothing is heard.
   worklet.connect(context.destination);
 
   return {
     context,
+    level: meter.level,
     stop: () => {
       stream.getTracks().forEach((track) => track.stop());
       void context.close();
@@ -73,8 +87,10 @@ export async function startMic({ onAudio, onSpeech }: MicHandlers): Promise<Mic>
 }
 
 // Plays PCM16 chunks (24 kHz) back to back so speech has no gaps.
-export function createPlayer(context: AudioContext): Player {
+export function createPlayer(context: AudioContext, { onPlaying, onIdle }: PlayerOptions): Player {
+  const meter = createMeter(context);
   const output = context.createGain();
+  meter.node.connect(output);
   output.connect(context.destination);
 
   const playing = new Set<AudioBufferSourceNode>();
@@ -84,6 +100,8 @@ export function createPlayer(context: AudioContext): Player {
   const setVolume = (volume: number) => output.gain.setTargetAtTime(volume, context.currentTime, FADE_SECONDS);
 
   return {
+    level: meter.level,
+
     play(pcm16) {
       const samples = new Int16Array(pcm16);
       const buffer = context.createBuffer(1, samples.length, PLAYBACK_RATE);
@@ -92,8 +110,12 @@ export function createPlayer(context: AudioContext): Player {
 
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(output);
-      source.onended = () => playing.delete(source);
+      source.connect(meter.node);
+      source.onended = () => {
+        playing.delete(source);
+        if (playing.size === 0) onIdle();
+      };
+      if (playing.size === 0) onPlaying();
       playing.add(source);
 
       nextStart = Math.max(context.currentTime + PLAYBACK_LEAD_SECONDS, nextStart);
@@ -110,10 +132,31 @@ export function createPlayer(context: AudioContext): Player {
 
     stop() {
       clearTimeout(duckTimer);
-      playing.forEach((source) => source.stop());
+      playing.forEach((source) => {
+        source.onended = null;
+        source.stop();
+      });
       playing.clear();
       nextStart = 0;
       output.gain.value = 1;
+      onIdle();
+    },
+  };
+}
+
+// Reads how loud the audio passing through is. The meter does not change the sound.
+function createMeter(context: AudioContext) {
+  const node = context.createAnalyser();
+  node.fftSize = 512;
+  const samples = new Float32Array(node.fftSize);
+
+  return {
+    node,
+    level: () => {
+      node.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      return Math.min(1, Math.sqrt(sum / samples.length) * LEVEL_GAIN);
     },
   };
 }
