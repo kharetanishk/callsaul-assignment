@@ -1,7 +1,7 @@
 // A courier backend that misbehaves on purpose, so the agent has to cope.
 
 export type Mode = "ok" | "slow" | "fail" | "lostack" | "hang";
-export type Slot = { id: string; label: string };
+export type Slot = { id: string; label: string; day: string; period: "morning" | "afternoon" | "evening" };
 export type BackendBooking = { ref: string; key: string; slotId: string };
 
 type Options = { seed?: number; normalMs?: number; slowMs?: number; failMs?: number };
@@ -11,7 +11,11 @@ type Options = { seed?: number; normalMs?: number; slowMs?: number; failMs?: num
 const WEIGHTS: [Mode, number][] = [["ok", 8], ["slow", 4], ["fail", 4], ["lostack", 3], ["hang", 1]];
 const MODES = WEIGHTS.flatMap(([mode, count]) => Array<Mode>(count).fill(mode));
 
-const WINDOWS = ["9 AM to 11 AM", "1 PM to 3 PM", "4 PM to 6 PM"];
+const WINDOWS = [
+  { period: "morning", time: "9 AM to 11 AM" },
+  { period: "afternoon", time: "1 PM to 3 PM" },
+  { period: "evening", time: "4 PM to 6 PM" },
+] as const;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -30,7 +34,7 @@ function slotList(): Slot[] {
     const date = new Date(Date.now() + daysAhead * 86_400_000);
     const day = date.toLocaleDateString("en-US", { weekday: "long" });
     const iso = date.toISOString().slice(0, 10);
-    return WINDOWS.map((window, i) => ({ id: `${iso}-${i + 1}`, label: `${day} ${window}` }));
+    return WINDOWS.map(({ period, time }, i) => ({ id: `${iso}-${i + 1}`, label: `${day} ${time}`, day, period }));
   });
 }
 
