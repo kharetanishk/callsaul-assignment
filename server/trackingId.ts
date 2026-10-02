@@ -34,15 +34,15 @@ export function isValid(id: string): boolean {
   return /^[A-Z]{2}\d{6}$/.test(id);
 }
 
-// "B as in Bravo, D as in Delta, 4, 1, 8, ..."
+// "B as in Bravo, D as in Delta, 4 1 8 2 0 7". Digits have no commas so the voice does not stall on each one.
 export function spell(id: string): string {
-  return [...id]
-    .map((c) => {
-      if (!/[A-Z]/.test(c)) return c;
-      const word = NATO_WORDS[c.charCodeAt(0) - 65]!;
-      return `${c} as in ${word[0]!.toUpperCase()}${word.slice(1)}`;
-    })
-    .join(", ");
+  const letters = [...id.slice(0, 2)].map((c) => {
+    if (!/[A-Z]/.test(c)) return c;
+    const word = NATO_WORDS[c.charCodeAt(0) - 65]!;
+    return `${c} as in ${word[0]!.toUpperCase()}${word.slice(1)}`;
+  });
+  const digits = [...id.slice(2)].join(" ");
+  return [...letters, digits].filter(Boolean).join(", ");
 }
 
 // Adds what the caller just said to the ID, or applies a correction if they made one.

@@ -55,5 +55,7 @@ test("validates the format", () => {
 });
 
 test("spells the ID for reading back", () => {
-  expect(spell("BD418207")).toBe("B as in Bravo, D as in Delta, 4, 1, 8, 2, 0, 7");
+  expect(spell("BD418207")).toBe("B as in Bravo, D as in Delta, 4 1 8 2 0 7");
+  expect(spell("BD41")).toBe("B as in Bravo, D as in Delta, 4 1");
+  expect(spell("B")).toBe("B as in Bravo");
 });

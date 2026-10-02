@@ -1,0 +1,12 @@
+// Messages the server sends to the browser as JSON. Audio is sent as binary frames instead.
+import type { LogKind } from "./booking";
+import type { Stage } from "./session";
+
+export type ServerMessage =
+  | { type: "agent"; text: string }
+  | { type: "user"; text: string }
+  | { type: "interim"; text: string }
+  | { type: "log"; kind: LogKind; text: string }
+  | { type: "metric"; name: "voice" | "response"; ms: number }
+  | { type: "state"; stage: Stage; trackingId: string; bookings: number }
+  | { type: "speak_fallback"; text: string };
