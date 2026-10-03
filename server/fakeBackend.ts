@@ -7,7 +7,7 @@ export type BackendBooking = { ref: string; key: string; slotId: string };
 export type CallKind = "slots" | "book" | "status";
 export type BackendEvent = { call: CallKind; mode: Mode };
 
-type Options = { seed?: number; normalMs?: number; slowMs?: number; failMs?: number };
+type Options = { normalMs?: number; slowMs?: number; failMs?: number };
 
 // ok: answers fast. slow: answers late. fail: errors, nothing saved.
 // lostack: saves the booking but the reply is lost. hang: never answers.
@@ -22,16 +22,6 @@ const WINDOWS = [
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Same seed gives the same sequence, so a failure can be reproduced.
-function seededRandom(seed: number) {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function slotList(): Slot[] {
   return [1, 2].flatMap((daysAhead) => {
     const date = new Date(Date.now() + daysAhead * 86_400_000);
@@ -41,8 +31,7 @@ function slotList(): Slot[] {
   });
 }
 
-export function createBackend({ seed, normalMs = 300, slowMs = 6000, failMs = 500 }: Options = {}) {
-  const random = seed === undefined ? Math.random : seededRandom(seed);
+export function createBackend({ normalMs = 300, slowMs = 6000, failMs = 500 }: Options = {}) {
   const bookings = new Map<string, BackendBooking>();
   const listeners = new Set<(event: BackendEvent) => void>();
 
@@ -64,7 +53,7 @@ export function createBackend({ seed, normalMs = 300, slowMs = 6000, failMs = 50
       const scripted = backend.script.shift();
       if (scripted) return scripted;
       if (backend.forced) return kind === "book" ? backend.forced : "ok";
-      return MODES[Math.floor(random() * MODES.length)]!;
+      return MODES[Math.floor(Math.random() * MODES.length)]!;
     },
 
     slots: () => act("slots", slotList),

@@ -5,7 +5,8 @@ const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
 });
-process.env.ELEVENLABS_API_KEY ??= "test";
+// An empty value from a copied .env.example counts as missing, so a test key is set either way.
+process.env.ELEVENLABS_API_KEY ||= "test";
 
 // Fakes both voices. ElevenLabs fails the given number of times first.
 function fakeVoices(elevenlabsFailures: number) {

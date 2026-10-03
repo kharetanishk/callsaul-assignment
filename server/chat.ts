@@ -9,7 +9,7 @@ const dim = (text: string) => `\x1b[2m${text}\x1b[0m`;
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 const deps = {
-  backend: createBackend({ seed: process.env.FAKE_SEED ? Number(process.env.FAKE_SEED) : undefined }),
+  backend: createBackend(),
   say: (text: string) => console.log(`Agent: ${text}`),
   log: (kind: string, text: string) => console.log(dim(`  [${kind}] ${text}`)),
   llm: apiKey ? createLlm(apiKey, modelsFromEnv(process.env.OPENROUTER_MODEL)) : undefined,

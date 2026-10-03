@@ -13,8 +13,7 @@ const deepgramKey = process.env.DEEPGRAM_API_KEY;
 if (!deepgramKey) throw new Error("DEEPGRAM_API_KEY is missing. Copy .env.example to .env and fill it in.");
 
 const port = Number(process.env.PORT ?? 3000);
-const seed = process.env.FAKE_SEED ? Number(process.env.FAKE_SEED) : undefined;
-const backend = createBackend({ seed });
+const backend = createBackend();
 const openRouterKey = process.env.OPENROUTER_API_KEY;
 
 // Free: free OpenRouter models and the Deepgram voice. Premium: paid OpenRouter models and the ElevenLabs voice.
@@ -96,5 +95,5 @@ banner("Reschedule voice agent", [
   ["Listening", "Deepgram nova-3"],
   ["Free tier", openRouterKey ? `${freeModels[0]} (+${freeModels.length - 1} backups), Deepgram aura-2 voice` : "fixed replies only (set OPENROUTER_API_KEY), Deepgram aura-2 voice"],
   ["Premium tier", premiumReady ? `${paidModels.join(", then ")}, ElevenLabs voice` : "off (needs OPENROUTER_API_KEY and ELEVENLABS_API_KEY)"],
-  ["Booking system", `fake courier backend, ${seed === undefined ? "random behaviour" : `seed ${seed}`}`],
+  ["Booking system", "fake courier backend, misbehaves at random (change it with the stress test bar)"],
 ]);

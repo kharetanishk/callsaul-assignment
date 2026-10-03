@@ -75,15 +75,6 @@ test("tells the caller to wait while the backend is slow", async () => {
   expect(booking.status).toBe("done");
 });
 
-test("the same seed gives the same misbehaviour", () => {
-  const modes = (seed: number) => {
-    const backend = createBackend({ seed });
-    return Array.from({ length: 20 }, () => backend.pickMode());
-  };
-  expect(modes(42)).toEqual(modes(42));
-  expect(modes(42)).not.toEqual(modes(7));
-});
-
 test("offers slots with an id and a label", async () => {
   const backend = createBackend({ normalMs: 1 });
   backend.forced = "ok";
