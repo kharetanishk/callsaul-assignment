@@ -18,6 +18,8 @@ export type Session = {
   lastSaid: string;
   // The last few things said by each side, so an answer can take the conversation into account.
   history: Turn[];
+  // "no, the last two digits": a correction that names the place but not the value yet.
+  pendingFix?: string;
   // The caller asked for a moment. The agent waits quietly until this time.
   holdUntil?: number;
   busy: boolean;

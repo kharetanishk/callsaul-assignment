@@ -10,7 +10,7 @@ const OPTIONS = [
   { mode: "hang", label: "Never answers", hint: "The booking request never replies. The agent gives up cleanly after about 17 seconds." },
 ];
 
-const SEGMENT = "cursor-pointer rounded-full px-3.5 py-2 text-[13px] transition-all hover:-translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
+const SEGMENT = "cursor-pointer rounded-full px-3 py-1 text-xs transition-all hover:-translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
 
 export function StressTest() {
   const [mode, setMode] = useState("random");
@@ -31,9 +31,9 @@ export function StressTest() {
   const selected = OPTIONS.find((option) => option.mode === mode);
 
   return (
-    <section className="glass rounded-[26px] p-5">
-      <h2 className="mb-3.5 text-[15px] font-semibold">Stress test the booking system</h2>
-      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Booking system behaviour">
+    <section className="glass flex-none rounded-[22px] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Booking system behaviour">
+        <h2 className="mr-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase">Booking system</h2>
         {OPTIONS.map((option) => (
           <button
             key={option.mode}
@@ -51,7 +51,7 @@ export function StressTest() {
           </button>
         ))}
       </div>
-      <p className="mt-3 min-h-10 text-[13.5px] text-muted">{selected?.hint}</p>
+      <p className="mt-1.5 truncate text-xs text-muted" title={selected?.hint}>{selected?.hint}</p>
     </section>
   );
 }

@@ -4,7 +4,7 @@ import { matchIntent, type Intent } from "./intents";
 import type { Llm } from "./llm";
 import type { Session } from "./session";
 import { isQuestion, wantsNewId } from "./speech";
-import { hasValidShape, ID_LENGTH, idCharsIn, isValid, spell, updateId } from "./trackingId";
+import { hasValidShape, ID_LENGTH, idCharsIn, isValid, namesPositionOnly, spell, updateId } from "./trackingId";
 
 export type Deps = {
   backend: Backend;
@@ -73,7 +73,21 @@ async function route(ctx: Ctx, text: string) {
     return say("No problem, let's start again. What is your tracking ID?");
   }
 
-  // The caller can change the ID at any point, not only while we are asking for it.
+  // The caller can fix or change the ID at any point, not only while we are asking for it.
+  const pendingFix = session.pendingFix;
+  session.pendingFix = undefined;
+  if (session.trackingId) {
+    // A correction can come in two breaths: "no, the last two digits" ... "should be one three".
+    const said = pendingFix ? `${pendingFix} ${text}` : text;
+    const fixed = applyId(session.trackingId, said);
+    if (fixed !== session.trackingId && isValid(fixed) && (pendingFix || wantsNewId(text) || namesPositionOrNot(text))) {
+      return replaceId(ctx, fixed);
+    }
+    if (namesPositionOnly(said)) {
+      session.pendingFix = said;
+      return say("Sure. What should it be?");
+    }
+  }
   if (wantsNewId(text)) return changeId(ctx, text);
   if (session.stage !== "ASK_ID" && session.stage !== "CONFIRM_ID") {
     const changed = applyId(session.trackingId, text);
@@ -109,19 +123,30 @@ function clearBookingState(session: Session) {
   });
 }
 
-// "I want to change the tracking ID". Whatever was chosen for the old ID is dropped.
+// "I want to change the tracking ID" or "the ID is wrong". The fix or the new ID often follows in the next breath,
+// so the current ID is kept until we know which: "the last digit is seven" fixes it, a whole ID replaces it.
 function changeId(ctx: Ctx, text: string) {
   const { session, deps, say } = ctx;
   deps.log("warn", "Caller wants to change the tracking ID");
-  clearBookingState(session);
-  if (applyId("", text) === "") return say("No problem. What is the new tracking ID?");
-  return askId(ctx, text);
+  if (applyId("", text) !== "") {
+    clearBookingState(session);
+    return askId(ctx, text);
+  }
+  if (!session.trackingId) return say("No problem. What is the tracking ID?");
+  // The ID is in question now, so nothing can be booked against it until it is confirmed again.
+  Object.assign(session, { stage: "CONFIRM_ID", idConfirmed: false, slots: [], chosenSlotId: undefined, confirmedSlotId: undefined });
+  session.pendingFix = text;
+  say("No problem. Tell me which part to change, for example the last digit is seven, or say the whole new ID.");
 }
 
-// The caller gave a different ID, or corrected part of it, after the old one was confirmed.
-// The new one has to be confirmed again, and the slot picked for the old one no longer counts.
+// "the third digit is 9" or "B not D": a correction that says where, as opposed to a whole new ID.
+const namesPositionOrNot = (text: string) => /\bnot\b/i.test(text) || namesPositionOnly(text.split(/\b(is|are|should|to)\b/i)[0] ?? "");
+
+// The caller gave a different ID, or corrected part of it. The new one has to be confirmed again,
+// and the slot picked for the old one no longer counts.
 function replaceId(ctx: Ctx, id: string) {
   const { session, deps, say } = ctx;
+  const different = changedCharacters(session.trackingId, id) >= NEW_ID_CHARACTERS;
   deps.log("warn", `Tracking ID changed from ${session.trackingId} to ${id}, waiting for the caller to confirm it`);
   Object.assign(session, {
     stage: "CONFIRM_ID",
@@ -132,7 +157,7 @@ function replaceId(ctx: Ctx, id: string) {
     confirmedSlotId: undefined,
     booking: undefined,
   });
-  say(`I heard a new tracking ID. ${spell(id)}. Is that correct?`);
+  say(different ? `I heard a new tracking ID. ${spell(id)}. Is that correct?` : `Sorry about that. So it is ${spell(id)}. Is that correct?`);
 }
 
 // The two letters an ID begins with, a few characters that begin with a letter, or several of any kind.
@@ -183,14 +208,12 @@ async function confirmId(ctx: Ctx, text: string) {
   }
 
   const next = applyId(session.trackingId, text);
-  if (next !== session.trackingId && isValid(next)) {
-    const different = changedCharacters(session.trackingId, next) >= NEW_ID_CHARACTERS;
-    deps.log("warn", `${different ? "Caller gave a different tracking ID" : "Corrected tracking ID"}: ${next}`);
-    session.trackingId = next;
-    session.idConfirmed = false;
-    return say(different ? `Got it, a different ID. ${spell(next)}. Is that correct?` : `Sorry about that. Is it ${spell(next)}?`);
+  if (next !== session.trackingId && isValid(next)) return replaceId(ctx, next);
+  // Letters or digits we could not place. Never hand these to the LLM, it would make up its own version of the ID.
+  if (idCharsIn(text)) {
+    return say("Sorry, I could not tell which part to change. You can say, for example, the last digit is seven, or say the whole ID again.");
   }
-  if (isNo(text)) return say("Sorry. Which character is wrong? Or say the whole ID again.");
+  if (isNo(text)) return say("Sorry. Which part is wrong? You can say, for example, the last two digits are one three, or say the whole ID again.");
   await fallback(ctx, text);
 }
 
@@ -330,6 +353,7 @@ function systemPrompt(session: Session): string {
     facts,
     "Reply in one or two short plain sentences. No lists, no markdown, no emojis, and do not ask a question, because the system adds the next question itself.",
     "You may explain what you do and how this call works.",
+    "Never read out, repeat, guess or change the tracking ID or any letters or digits. The system does that itself.",
     "You cannot look up parcel status, prices, policies or delivery times, and you must never guess them. Say you cannot help with that and that you can only reschedule.",
     `If the caller is clearly talking to someone else, or it is background chatter, reply with exactly ${IGNORE}.`,
   ].join(" ");
@@ -356,7 +380,7 @@ function cleanAnswer(raw: string): string | undefined {
   // The system asks the next question itself, so any sentence in the answer that asks something is dropped.
   const sentences = text
     .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b/i.test(sentence))
+    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b|\bas in\b|\d/i.test(sentence))
     .slice(0, 2)
     .join(" ");
   if (!sentences) return;

@@ -86,3 +86,7 @@ test("a new ID or a request to change it counts as relevant at every step", () =
   expect(isRelevant("we should leave around six tomorrow", "OFFER_SLOTS")).toBe(true);
   expect(isRelevant("we should leave around six tomorrow", "DONE")).toBe(false);
 });
+
+test("a word said over and over is still a short answer", () => {
+  expect(isRelevant("wait wait wait wait wait wait wait", "OFFER_SLOTS")).toBe(true);
+});

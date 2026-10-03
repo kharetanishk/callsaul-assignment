@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { TimelineItem } from "../useCall";
 
 const formatTime = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -18,8 +18,8 @@ function Entry({ item }: { item: TimelineItem }) {
       <div
         className={`animate-rise max-w-[82%] rounded-[18px] px-3.5 pt-2.5 pb-2 ${
           mine
-            ? "glass justify-self-end rounded-br-md"
-            : "justify-self-start rounded-bl-md border border-[#ffbe8c]/55 bg-linear-to-br from-[#ffc496]/50 to-[#ffaa8c]/25"
+            ? "glass self-end rounded-br-md"
+            : "self-start rounded-bl-md border border-[#ffbe8c]/55 bg-linear-to-br from-[#ffc496]/50 to-[#ffaa8c]/25"
         }`}
       >
         <span className="mb-0.5 block text-[11px] font-bold tracking-widest text-muted uppercase">{mine ? "You" : "Agent"}</span>
@@ -41,19 +41,32 @@ function Entry({ item }: { item: TimelineItem }) {
 
 type Props = { items: TimelineItem[]; interim: string };
 
+const NEAR_BOTTOM_PX = 60;
+
 export function Timeline({ items, interim }: Props) {
   const [technical, setTechnical] = useState(false);
   const feed = useRef<HTMLDivElement>(null);
+  // Follows the newest line unless the reader scrolled up to look at something older.
+  const [following, setFollowing] = useState(true);
   const shown = technical ? items : items.filter((item) => !item.technical);
 
-  // Scroll only the feed. scrollIntoView would also move the whole page.
-  // The braces matter: scrollTo returns a Promise in current browsers, and an effect must not return one.
-  useEffect(() => {
-    feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: "smooth" });
-  }, [shown.length, interim]);
+  const toBottom = () => {
+    const element = feed.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  };
+
+  // Runs before the browser paints, so the newest line appears already in view instead of jumping in.
+  useLayoutEffect(() => {
+    if (following) toBottom();
+  }, [shown.length, interim, following]);
+
+  const onScroll = () => {
+    const element = feed.current!;
+    setFollowing(element.scrollHeight - element.scrollTop - element.clientHeight < NEAR_BOTTOM_PX);
+  };
 
   return (
-    <section className="glass rounded-[26px] p-5">
+    <section className="glass relative flex h-[60vh] flex-col rounded-[26px] p-5 min-[901px]:h-auto min-[901px]:min-h-0 min-[901px]:flex-1">
       <header className="mb-3 flex items-center justify-between">
         <h2 className="text-[15px] font-semibold">Call timeline</h2>
         <label className="inline-flex cursor-pointer items-center gap-2 text-[13px] text-muted">
@@ -62,18 +75,27 @@ export function Timeline({ items, interim }: Props) {
           Technical details
         </label>
       </header>
-      <div ref={feed} className="grid max-h-[440px] gap-2.5 overflow-y-auto pr-1" aria-live="polite">
-        {shown.length === 0 && !interim && <p className="py-6 text-center text-muted">The conversation will appear here as you talk.</p>}
+      <div ref={feed} onScroll={onScroll} className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto pr-1 [&>*]:shrink-0" aria-live="polite">
+        {shown.length === 0 && !interim && <p className="m-auto text-center text-muted">The conversation will appear here as you talk.</p>}
         {shown.map((item) => (
           <Entry key={item.id} item={item} />
         ))}
         {interim && (
-          <div className="glass max-w-[82%] justify-self-end rounded-[18px] rounded-br-md px-3.5 pt-2.5 pb-2 italic opacity-60">
+          <div className="glass max-w-[82%] self-end rounded-[18px] rounded-br-md px-3.5 pt-2.5 pb-2 italic opacity-60">
             <span className="mb-0.5 block text-[11px] font-bold tracking-widest text-muted uppercase not-italic">You</span>
             <p className="text-[14.5px]">{interim}</p>
           </div>
         )}
       </div>
+      {!following && (
+        <button
+          type="button"
+          onClick={() => setFollowing(true)}
+          className="gold-surface absolute bottom-4 left-1/2 -translate-x-1/2 cursor-pointer rounded-full px-4 py-1.5 text-xs font-semibold"
+        >
+          Jump to latest
+        </button>
+      )}
     </section>
   );
 }

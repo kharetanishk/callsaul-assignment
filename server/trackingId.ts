@@ -25,7 +25,11 @@ const WORDS = new Map<string, string>([
 ]);
 
 const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"];
-const ORDINAL_PATTERN = new RegExp(`\\b(${ORDINALS.join("|")})\\s+(digit|letter|character)\\b`);
+// "the third digit", "the last digit", "the last two digits", "the first letter".
+const COUNTS: Record<string, number> = { two: 2, three: 3, four: 4, "2": 2, "3": 3, "4": 4 };
+const POSITION_PATTERN = new RegExp(
+  `\\b(last|${ORDINALS.join("|")})(?:\\s+(two|three|four|2|3|4))?\\s+(digit|letter|character|number)s?\\b`,
+);
 const AS_IN_PATTERN = new RegExp(`\\b[a-z0-9]+\\s+(?:as in|for)\\s+(${NATO_WORDS.join("|")})\\b`, "g");
 
 export const ID_LENGTH = 8;
@@ -89,15 +93,33 @@ function longestIdRun(clean: string): string {
   return best.length >= MIN_RUN_WORDS ? best.join(" ") : "";
 }
 
+// Where in the ID a correction points to, and where the new value starts in the text.
+function findPosition(clean: string) {
+  const match = clean.match(POSITION_PATTERN);
+  if (!match) return;
+  const count = COUNTS[match[2] ?? ""] ?? 1;
+  const kind = match[3];
+  const [from, size] = kind === "letter" ? [0, 2] : kind === "character" ? [0, ID_LENGTH] : [2, ID_LENGTH - 2];
+  const start = match[1] === "last" ? from + size - count : from + ORDINALS.indexOf(match[1]!);
+  return { start, count, end: match.index! + match[0].length };
+}
+
+// "no, the last two digits" with no new value yet. The value usually follows in the next breath.
+export function namesPositionOnly(text: string): boolean {
+  const clean = simplify(text);
+  const position = findPosition(clean);
+  return position !== undefined && toChars(clean.slice(position.end)).length < position.count;
+}
+
 // Adds what the caller just said to the ID, or applies a correction if they made one.
 export function updateId(current: string, text: string): string {
   const clean = simplify(text);
 
-  const position = clean.match(ORDINAL_PATTERN);
+  const position = findPosition(clean);
   if (position) {
-    const index = ORDINALS.indexOf(position[1]!) + (position[2] === "digit" ? 2 : 0);
-    const [right] = toChars(clean.slice(position.index! + position[0].length));
-    return right ? replaceAt(current, index, right) : current;
+    const right = toChars(clean.slice(position.end)).slice(0, position.count);
+    if (right.length < position.count) return current;
+    return right.reduce((id, char, offset) => replaceAt(id, position.start + offset, char), current);
   }
 
   const [before = "", after] = clean.split(/\bnot\b/);
@@ -129,6 +151,13 @@ const NEUTRAL_WORDS = new Set([
   "number", "the", "um", "uh", "okay", "ok", "so", "yes", "yeah", "no", "its", "said", "i",
 ]);
 
+const COMMON_TWO_LETTER_WORDS = new Set([
+  "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it", "me", "my", "no", "of", "oh", "ok", "on",
+  "or", "so", "to", "up", "us", "we",
+]);
+const isDigitWord = (word: string) => /^\d+$/.test(word) || DIGIT_WORD_SET.has(word);
+const DIGIT_WORD_SET = new Set(Object.keys(DIGIT_WORDS));
+
 const isIdWord = (word: string) => WORDS.has(word) || /^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word);
 
 // Someone reading out an ID says mostly ID words. Background chatter has many other words.
@@ -155,7 +184,11 @@ function toChars(text: string, strict = false): string[] {
       // "the second one" is an answer to "which slot", so the "one" after an ordinal is not a digit.
       const answeringWhich = before !== undefined && ORDINALS.includes(before) && /^(one|[1-9])$/.test(word);
       const skip = answeringWhich || (strict && alone && !(next && isIdWord(next)) && !(before && isIdWord(before)));
-      const found = skip ? "" : (WORDS.get(word) ?? (/^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word) ? word.toUpperCase() : ""));
+      // The recognizer often writes the two letters as one word, "ab nine zero ...".
+      const pairOfLetters = /^[a-z]{2}$/.test(word) && !COMMON_TWO_LETTER_WORDS.has(word) && next !== undefined && isDigitWord(next);
+      const found = skip
+        ? ""
+        : (WORDS.get(word) ?? (/^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word) || pairOfLetters ? word.toUpperCase() : ""));
       for (const c of found) out.push(...Array<string>(repeat).fill(c));
       repeat = 1;
     }

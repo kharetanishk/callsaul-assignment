@@ -42,39 +42,41 @@ export function App() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden px-[clamp(16px,4vw,56px)] pt-7 pb-16 font-sans text-[15px] leading-normal">
+    // On a laptop or desktop the whole call fits on one screen. Only the timeline scrolls, and it follows the talk by itself.
+    <div className="relative flex min-h-screen flex-col gap-4 overflow-hidden px-[clamp(16px,3vw,40px)] py-4 font-sans text-[15px] leading-normal min-[901px]:h-screen">
       <div className="animate-float pointer-events-none fixed -top-36 -left-32 size-[520px] rounded-full bg-(--scene-a) opacity-75 blur-[90px]" />
       <div className="animate-float pointer-events-none fixed top-[10%] -right-52 size-[600px] rounded-full bg-(--scene-b) opacity-75 blur-[90px] [animation-delay:-7s]" />
       <div className="animate-float pointer-events-none fixed -bottom-56 left-[30%] size-[560px] rounded-full bg-(--scene-c) opacity-75 blur-[90px] [animation-delay:-13s]" />
 
-      <header className="relative z-10 mx-auto mb-7 flex max-w-[1200px] flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <span className="size-10 rounded-full bg-[radial-gradient(circle_at_32%_28%,#fff,var(--color-gold-bright)_28%,var(--color-peach)_62%,#d98543)] shadow-[0_8px_20px_-6px_var(--shadow),inset_0_-3px_6px_rgba(190,100,50,0.35)]" />
+      <header className="relative z-10 mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <div className="flex items-center gap-3">
+          <span className="size-9 rounded-full bg-[radial-gradient(circle_at_32%_28%,#fff,var(--color-gold-bright)_28%,var(--color-peach)_62%,#d98543)] shadow-[0_8px_20px_-6px_var(--shadow),inset_0_-3px_6px_rgba(190,100,50,0.35)]" />
           <div>
-            <h1 className="text-[22px] font-bold tracking-tight">Reschedule a Delivery</h1>
-            <p className="text-[13.5px] text-muted">Move your courier delivery to a new slot, just by talking.</p>
+            <h1 className="text-lg font-bold tracking-tight">Reschedule a Delivery</h1>
+            <p className="text-xs text-muted">Move your courier delivery to a new slot, just by talking.</p>
           </div>
         </div>
-        <div className="flex items-center gap-2.5">
-          <span className={`glass inline-flex items-center gap-2 rounded-full px-3.5 py-[7px] text-[13px] ${active ? "text-ink" : "text-muted"}`}>
-            <span className={`size-2 rounded-full ${call.phase === "reconnecting" ? "animate-live bg-warn" : active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
-            {call.phase === "reconnecting" ? "Reconnecting" : active ? "On a call" : "Not connected"}
-          </span>
+        <div className="glass order-last w-full rounded-full px-5 py-2 min-[901px]:order-none min-[901px]:w-auto min-[901px]:min-w-[520px] min-[901px]:flex-1 min-[901px]:max-w-[640px]">
+          <Stepper stage={call.stage} />
         </div>
+        <span className={`glass inline-flex items-center gap-2 rounded-full px-3.5 py-[7px] text-[13px] ${active ? "text-ink" : "text-muted"}`}>
+          <span className={`size-2 rounded-full ${call.phase === "reconnecting" ? "animate-live bg-warn" : active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
+          {call.phase === "reconnecting" ? "Reconnecting" : active ? "On a call" : "Not connected"}
+        </span>
       </header>
 
-      <main className="relative z-10 mx-auto grid max-w-[1200px] grid-cols-1 items-start gap-6 min-[901px]:grid-cols-[minmax(340px,5fr)_6fr]">
+      <main className="relative z-10 mx-auto grid w-full max-w-[1400px] flex-1 grid-cols-1 gap-5 min-[901px]:min-h-0 min-[901px]:grid-cols-[minmax(360px,5fr)_7fr]">
         <section
           ref={stage}
           onPointerMove={lean}
           onPointerLeave={level}
-          className="glass glow-border grid justify-items-center gap-3.5 rounded-[28px] px-6 pt-7 pb-6 text-center transition-transform duration-200 [transform:perspective(1200px)_rotateX(var(--tilt-x,0deg))_rotateY(var(--tilt-y,0deg))] min-[901px]:sticky min-[901px]:top-6"
+          className="glass glow-border flex flex-col items-center gap-3 rounded-[28px] px-6 pt-4 pb-5 text-center transition-transform duration-200 [transform:perspective(1200px)_rotateX(var(--tilt-x,0deg))_rotateY(var(--tilt-y,0deg))] min-[901px]:min-h-0"
         >
-          <div className="relative aspect-square w-[min(100%,440px)]">
+          <div className="relative aspect-square w-full max-w-[400px] min-[901px]:aspect-auto min-[901px]:min-h-[180px] min-[901px]:flex-1">
             <AgentOrb phase={call.phase} levels={call.levels} />
           </div>
 
-          <div className="animate-rise min-h-[58px]" key={call.phase}>
+          <div className="animate-rise" key={call.phase}>
             <h2 className="bg-linear-to-r from-[#ffb680] via-[#ffd98a] to-[#ff9aa8] bg-clip-text text-2xl font-bold tracking-tight text-transparent">{text.title}</h2>
             <p className="text-sm text-muted">{text.caption}</p>
           </div>
@@ -82,7 +84,7 @@ export function App() {
           <button
             type="button"
             onClick={active ? call.end : call.start}
-            className={`min-w-52 cursor-pointer rounded-full px-9 py-3.5 text-base font-bold transition hover:-translate-y-0.5 active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold ${
+            className={`min-w-52 cursor-pointer rounded-full px-9 py-3 text-base font-bold transition hover:-translate-y-0.5 active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gold ${
               active ? "glass text-ink shadow-[0_12px_24px_-10px_rgba(212,87,77,0.5)]" : "gold-surface border-0"
             }`}
           >
@@ -91,10 +93,10 @@ export function App() {
 
           <TrackingTiles id={call.trackingId} confirmed={call.idConfirmed} />
 
-          <dl className="mt-1 flex w-full gap-3">
-            <div className="flex-1 rounded-2xl bg-tile px-3 py-2.5">
-              <dt className="text-[11.5px] tracking-wider text-muted uppercase">Response time</dt>
-              <dd className="text-lg font-bold">
+          <dl className="flex w-full gap-3">
+            <div className="flex flex-1 items-center justify-between rounded-2xl bg-tile px-3.5 py-2">
+              <dt className="text-[11px] tracking-wider text-muted uppercase">Response time</dt>
+              <dd className="font-bold">
                 {call.responseMs === undefined ? (
                   "-"
                 ) : (
@@ -105,20 +107,16 @@ export function App() {
                 )}
               </dd>
             </div>
-            <div className="flex-1 rounded-2xl bg-tile px-3 py-2.5">
-              <dt className="text-[11.5px] tracking-wider text-muted uppercase">Bookings made</dt>
-              <dd className="text-lg font-bold">{call.bookings}</dd>
+            <div className="flex flex-1 items-center justify-between rounded-2xl bg-tile px-3.5 py-2">
+              <dt className="text-[11px] tracking-wider text-muted uppercase">Bookings made</dt>
+              <dd className="font-bold">{call.bookings}</dd>
             </div>
           </dl>
         </section>
 
-        <div className="grid gap-[18px]">
-          <section className="glass rounded-[26px] p-5">
-            <h2 className="mb-3.5 text-[15px] font-semibold">Progress</h2>
-            <Stepper stage={call.stage} />
-          </section>
-          <StressTest />
+        <div className="flex flex-col gap-4 min-[901px]:min-h-0">
           <Timeline items={call.timeline} interim={call.interim} />
+          <StressTest />
         </div>
       </main>
     </div>

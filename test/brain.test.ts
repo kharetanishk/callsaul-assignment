@@ -301,10 +301,9 @@ test("a new ID after a slot was picked drops the slot, and nothing is booked unt
 test("saying you want to change the tracking ID starts the ID over", async () => {
   const { session, said, talk } = setup();
   await talk(FULL_ID, "yes", "I want to change the whole tracking ID");
-  expect(session.stage).toBe("ASK_ID");
-  expect(session.trackingId).toBe("");
   expect(session.idConfirmed).toBe(false);
-  expect(said.at(-1)).toContain("new tracking ID");
+  expect(session.slots).toEqual([]);
+  expect(said.at(-1)).toContain("which part to change");
 
   await talk(OTHER_ID);
   expect(session.trackingId).toBe("AK552019");
@@ -322,8 +321,9 @@ test("the new ID can be given in the same sentence as the request to change it",
 test("saying the ID is wrong while it is being confirmed asks for a new one", async () => {
   const { session, said, talk } = setup();
   await talk(FULL_ID, "no, that tracking ID is wrong");
-  expect(session.stage).toBe("ASK_ID");
-  expect(said.at(-1)).toContain("new tracking ID");
+  expect(said.at(-1)).toContain("which part to change");
+  await talk(OTHER_ID);
+  expect(session.trackingId).toBe("AK552019");
 });
 
 test("a correction made after the ID was confirmed changes it and asks again", async () => {
@@ -338,7 +338,7 @@ test("a completely different ID while confirming is called out as a different ID
   const { session, said, talk } = setup();
   await talk(FULL_ID, OTHER_ID);
   expect(session.trackingId).toBe("AK552019");
-  expect(said.at(-1)).toContain("different ID");
+  expect(said.at(-1)).toContain("new tracking ID");
   expect(session.idConfirmed).toBe(false);
 });
 
@@ -412,4 +412,66 @@ test("just the two letters of a new ID, said after confirmation, start collectin
   expect(session.stage).toBe("ASK_ID");
   expect(session.trackingId).toBe("AK");
   expect(said.at(-1)).toContain("What comes next");
+});
+
+// The exact call from the log: the ID was fixed with "the last digit" style corrections.
+test("the tracking ID is wrong, the last digit should be seven: fixes that digit instead of starting over", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk("A B nine zero nine five nine one", "yes");
+  await talk("the tracking id is wrong the last digit should be seven");
+  expect(session.trackingId).toBe("AB909597");
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.idConfirmed).toBe(false);
+  expect(said.at(-1)).toContain("9 0 9 5 9 7");
+});
+
+test("a correction split over two breaths is put together: no the last two digits ... should be one three", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk("A B nine zero nine five nine seven");
+  await talk("no the last two digit");
+  expect(said.at(-1)).toContain("What should it be");
+  await talk("should be one three");
+  expect(session.trackingId).toBe("AB909513");
+  expect(said.at(-1)).toContain("9 0 9 5 1 3");
+  expect(said.at(-1)).not.toContain("9 0 9 5 9 7");
+  await talk("yes");
+  expect(session.idConfirmed).toBe(true);
+});
+
+test("position words: last, first, letters and digits", async () => {
+  const { updateId } = await import("../server/trackingId");
+  expect(updateId("BD418207", "the last digit is nine")).toBe("BD418209");
+  expect(updateId("BD418207", "the last two digits are one three")).toBe("BD418213");
+  expect(updateId("BD418207", "the first letter is c")).toBe("CD418207");
+  expect(updateId("BD418207", "the last letter should be k")).toBe("BK418207");
+  expect(updateId("BD418207", "the first two digits are 9 9")).toBe("BD998207");
+});
+
+test("ID characters the agent cannot place are never sent to the LLM", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk(FULL_ID, "five three");
+  expect(session.trackingId).toBe("BD418207");
+  expect(said.at(-1)).toContain("could not tell which part");
+});
+
+test("an LLM answer that reads out letters or digits is not spoken", async () => {
+  const llm: Llm = async () => "A as in Alpha, B as in Bravo, 9 0 9 5 1 3.";
+  const { said, talk } = setup([], llm);
+  await talk("purple banana window");
+  expect(said.at(-1)).not.toContain("Alpha");
+});
+
+test("the ID is wrong, then the fix in the next breath: the fix applies to the current ID", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk("A B nine zero nine five nine one", "yes", "the tracking ID is wrong");
+  expect(session.trackingId).toBe("AB909591");
+  await talk("the last digit should be seven");
+  expect(session.trackingId).toBe("AB909597");
+  expect(said.at(-1)).toContain("Is that correct");
+});
+
+test("two letters written as one word are read as letters", async () => {
+  const { updateId } = await import("../server/trackingId");
+  expect(updateId("", "ab nine zero nine five nine one")).toBe("AB909591");
+  expect(updateId("", "it is nine zero nine five")).not.toStartWith("IS");
 });

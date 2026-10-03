@@ -53,7 +53,8 @@ export function isEcho(words: string[], agentText: string): boolean {
 // Does this sound like it belongs to the conversation we are having right now?
 // Chatter between other people usually matches none of these.
 export function isRelevant(text: string, stage: Stage): boolean {
-  const short = realWords(text).length <= MAX_SHORT_ANSWER_WORDS;
+  // "wait wait wait" is one word said three times, still a short answer.
+  const short = new Set(realWords(text)).size <= MAX_SHORT_ANSWER_WORDS;
   if ((short && CONTROL_WORDS.test(text)) || isQuestion(text) || wantsNewId(text)) return true;
   // An ID can be changed at any step, so ID speech always counts.
   if (hasIdSpeech(text)) return true;
