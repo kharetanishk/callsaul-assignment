@@ -13,3 +13,6 @@ export type ServerMessage =
   | { type: "backend"; mode: Mode; text: string }
   | { type: "stop_audio" }
   | { type: "speak_fallback"; text: string };
+
+// Messages the browser sends as JSON. Audio is sent as binary frames instead.
+export type ClientMessage = { type: "hangup" };

@@ -41,11 +41,11 @@ export async function handleTurn(session: Session, text: string, deps: Deps): Pr
   if (session.busy) return ctx.say("Still working on it, one moment.");
 
   session.busy = true;
-  try {
-    await route(ctx, text);
-  } finally {
+  const turn = route(ctx, text).finally(() => {
     session.busy = false;
-  }
+  });
+  session.turn = turn.catch(() => {});
+  await turn;
 }
 
 function speak(session: Session, deps: Deps, text: string) {

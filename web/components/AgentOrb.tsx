@@ -10,6 +10,7 @@ type Look = { wobble: number; spin: number; glow: number; size: number; ripples:
 const LOOKS: Record<Phase, Look> = {
   idle: { wobble: 0.012, spin: 0.15, glow: 0.35, size: 1, ripples: 0, comet: 0, swirl: 0 },
   connecting: { wobble: 0.01, spin: 1.4, glow: 0.5, size: 0.94, ripples: 0, comet: 1, swirl: 0 },
+  reconnecting: { wobble: 0.01, spin: 1.4, glow: 0.4, size: 0.92, ripples: 0, comet: 1, swirl: 0 },
   listening: { wobble: 0.02, spin: 0.25, glow: 0.55, size: 1, ripples: 1, comet: 0, swirl: 0 },
   thinking: { wobble: 0.035, spin: 1.8, glow: 0.7, size: 0.9, ripples: 0, comet: 0, swirl: 1 },
   speaking: { wobble: 0.05, spin: 0.6, glow: 0.8, size: 1.02, ripples: 0, comet: 0, swirl: 0 },

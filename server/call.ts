@@ -52,10 +52,12 @@ export function startCall(
   let lastQuestion = "";
   // Aborted when the caller interrupts, which cancels every sentence that has not finished playing.
   let interrupted = new AbortController();
+  // Once the connection has gone, the call stops talking. A turn that is still running just finishes quietly.
+  let ended = false;
 
   const callId = sessionId.slice(0, 4);
   const note = (scope: Scope, text: string, level: Level = "info") => log(scope, text, level, callId);
-  const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
+  const send = (message: ServerMessage) => !ended && socket.send(JSON.stringify(message));
   const isSpeaking = () => sentencesQueued > 0 || Date.now() < speakingUntil;
 
   const sendState = () =>
@@ -83,6 +85,7 @@ export function startCall(
 
   // Sentences are spoken one after another, in the order they were said.
   function speak(text: string, isReminder = false) {
+    if (ended) return;
     if (!isReminder) lastQuestion = text;
     send({ type: "agent", text });
     note("AGENT", text);
@@ -113,7 +116,7 @@ export function startCall(
           heardAt = 0;
         }
         bytes += chunk.length;
-        socket.send(chunk);
+        if (!ended) socket.send(chunk);
       }
     } catch (error) {
       if (cancelled.aborted) return;
@@ -201,14 +204,32 @@ export function startCall(
     onError: (message) => tell("bad", message, "LISTEN"),
   });
 
-  note("CALL", `started, session ${sessionId}`, "good");
-  greet(session, deps);
+  // A session that already has history is a caller coming back after the line dropped.
+  const resuming = session.lastSaid !== "";
+  if (resuming) void resume();
+  else {
+    note("CALL", `started, session ${sessionId}`, "good");
+    greet(session, deps);
+  }
   sendState();
+
+  // Picks the conversation up where it stopped. If a turn was still running, its result is what gets repeated.
+  async function resume() {
+    tell("good", `Reconnected, the call continues at step ${session.stage}`, "CALL");
+    await session.turn;
+    if (ended) return;
+    lastQuestion = session.lastSaid;
+    speak(`Welcome back, sorry about the interruption. ${session.lastSaid}`, true);
+    sendState();
+  }
 
   return {
     sendAudio: stt.send,
     end: () => {
-      note("CALL", `ended, step reached: ${session.stage}, bookings made: ${backend.bookings.size}`, "good");
+      if (ended) return;
+      note("CALL", `connection closed at step ${session.stage}, bookings made: ${backend.bookings.size}`, "good");
+      ended = true;
+      interrupted.abort();
       stopListening();
       clearTimeout(silenceTimer);
       clearTimeout(holdTimer);

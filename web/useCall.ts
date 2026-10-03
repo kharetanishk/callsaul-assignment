@@ -7,7 +7,7 @@ import { createPlayer, startMic, type Mic, type Player } from "./audio";
 import { PREVIEW_INTERIM, PREVIEW_SUMMARY, PREVIEW_TIMELINE } from "./preview";
 
 export type Levels = { agent: () => number; caller: () => number };
-export type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
+export type Phase = "idle" | "connecting" | "reconnecting" | "listening" | "thinking" | "speaking";
 
 export type TimelineItem = {
   id: number;
@@ -18,11 +18,41 @@ export type TimelineItem = {
 };
 
 export type Summary = { stage?: Stage; trackingId: string; bookings: number; responseMs?: number };
-type ActiveCall = { socket: WebSocket; mic: Mic; player: Player };
+type ActiveCall = {
+  socket?: WebSocket;
+  mic: Mic;
+  player: Player;
+  sessionId: string;
+  ended: boolean;
+  // Failed connection attempts since the line was last up.
+  attempts: number;
+  lost: boolean;
+};
 
 const EMPTY_SUMMARY: Summary = { trackingId: "", bookings: 0 };
 // The agent often pauses briefly between sentences. It only counts as finished speaking after this long.
 const SPEAKING_GAP_MS = 350;
+// The browser remembers the call so a dropped or reloaded page can pick it up again.
+const SESSION_KEY = "callSession";
+const MAX_RECONNECT_ATTEMPTS = 8;
+const MAX_RECONNECT_DELAY_MS = 4000;
+
+function savedSession(): string | undefined {
+  try {
+    return localStorage.getItem(SESSION_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSession(id: string | undefined) {
+  try {
+    if (id) localStorage.setItem(SESSION_KEY, id);
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Private mode can block storage. The call still works, it just cannot be resumed after a reload.
+  }
+}
 
 // ?phase=speaking shows the page in that state, with sample content and without a call, to preview the design.
 const previewPhase = new URLSearchParams(location.search).get("phase") as Phase | null;
@@ -32,6 +62,7 @@ export function useCall() {
   const [summary, setSummary] = useState<Summary>(previewPhase ? PREVIEW_SUMMARY : EMPTY_SUMMARY);
   const [timeline, setTimeline] = useState<TimelineItem[]>(previewPhase ? PREVIEW_TIMELINE : []);
   const [interim, setInterim] = useState(previewPhase === "listening" ? PREVIEW_INTERIM : "");
+  const [canResume, setCanResume] = useState(() => !previewPhase && savedSession() !== undefined);
 
   const call = useRef<ActiveCall | undefined>(undefined);
   const asking = useRef(false);
@@ -61,7 +92,9 @@ export function useCall() {
           return setInterim(message.text);
         case "state":
           setSummary((old) => ({ ...old, stage: message.stage, trackingId: message.trackingId, bookings: message.bookings }));
-          return setPhase((current) => (current === "connecting" ? "listening" : current));
+          // A finished call cannot be resumed, so the next one starts fresh.
+          if (message.stage === "DONE") saveSession(undefined);
+          return setPhase((current) => (current === "connecting" || current === "reconnecting" ? "listening" : current));
         case "metric":
           if (message.name === "response") setSummary((old) => ({ ...old, responseMs: message.ms }));
           return;
@@ -80,16 +113,63 @@ export function useCall() {
     [addToTimeline],
   );
 
+  // The caller hung up on purpose. The server forgets the call, so it cannot be resumed.
   const end = useCallback(() => {
     const ended = call.current;
     call.current = undefined;
     clearTimeout(gapTimer.current);
-    ended?.socket.close();
-    ended?.mic.stop();
+    if (ended) {
+      ended.ended = true;
+      if (ended.socket?.readyState === WebSocket.OPEN) ended.socket.send(JSON.stringify({ type: "hangup" }));
+      ended.socket?.close();
+      ended.mic.stop();
+    }
+    saveSession(undefined);
+    setCanResume(false);
     speechSynthesis.cancel();
     setPhase("idle");
     setInterim("");
   }, []);
+
+  // Opens the connection for the current call. If it drops, tries again with the same session id.
+  const connect = useCallback(() => {
+    const active = call.current;
+    if (!active || active.ended) return;
+
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${location.host}/ws?session=${active.sessionId}`);
+    socket.binaryType = "arraybuffer";
+    active.socket = socket;
+
+    socket.onopen = () => {
+      if (!active.lost) return;
+      active.lost = false;
+      active.attempts = 0;
+      addToTimeline("good", "Connection restored");
+    };
+    socket.onmessage = (event) => (typeof event.data === "string" ? onMessage(JSON.parse(event.data)) : active.player.play(event.data));
+    socket.onclose = () => {
+      if (call.current !== active || active.ended) return;
+
+      active.player.stop();
+      speechSynthesis.cancel();
+      setInterim("");
+      setPhase("reconnecting");
+      if (!active.lost) {
+        active.lost = true;
+        addToTimeline("warn", "The connection dropped. Reconnecting, the call will pick up where it left off.");
+      }
+      if (++active.attempts > MAX_RECONNECT_ATTEMPTS) {
+        addToTimeline("bad", "Could not reconnect. Press Resume call to try again.");
+        active.ended = true;
+        call.current = undefined;
+        active.mic.stop();
+        setCanResume(true);
+        return setPhase("idle");
+      }
+      setTimeout(connect, Math.min(1000 * active.attempts, MAX_RECONNECT_DELAY_MS));
+    };
+  }, [addToTimeline, onMessage]);
 
   const start = useCallback(async () => {
     if (call.current || asking.current) return;
@@ -99,7 +179,7 @@ export function useCall() {
     let mic: Mic;
     try {
       mic = await startMic({
-        onAudio: (audio) => call.current?.socket.readyState === WebSocket.OPEN && call.current.socket.send(audio),
+        onAudio: (audio) => call.current?.socket?.readyState === WebSocket.OPEN && call.current.socket.send(audio),
         onSpeech: () => call.current?.player.duck(),
       });
     } catch {
@@ -110,9 +190,16 @@ export function useCall() {
       asking.current = false;
     }
 
+    // A saved session means the last call was cut off, so carry on with it.
+    const resumed = savedSession();
+    const sessionId = resumed ?? crypto.randomUUID();
+    saveSession(sessionId);
+    setCanResume(false);
+
     startedAt.current = Date.now();
     setTimeline([]);
     setSummary(EMPTY_SUMMARY);
+    if (resumed) addToTimeline("info", "Resuming your previous call");
 
     const player = createPlayer(mic.context, {
       onPlaying: () => {
@@ -124,15 +211,21 @@ export function useCall() {
       },
     });
 
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${location.host}/ws?session=${crypto.randomUUID()}`);
-    socket.binaryType = "arraybuffer";
-    socket.onmessage = (event) => (typeof event.data === "string" ? onMessage(JSON.parse(event.data)) : player.play(event.data));
-    socket.onclose = end;
-    call.current = { socket, mic, player };
-  }, [addToTimeline, end, onMessage]);
+    call.current = { mic, player, sessionId, ended: false, attempts: 0, lost: false };
+    connect();
+  }, [addToTimeline, connect]);
 
-  useEffect(() => end, [end]);
+  // Closing the page is not hanging up. The call stays on the server for a while so it can be resumed.
+  useEffect(
+    () => () => {
+      const active = call.current;
+      if (!active) return;
+      active.ended = true;
+      active.socket?.close();
+      active.mic.stop();
+    },
+    [],
+  );
 
   // How loud each side is right now. The orb reads these many times a second, so they are not React state.
   const levels = useRef<Levels>({
@@ -143,5 +236,5 @@ export function useCall() {
   // While the booking is being made the agent is working even if it is quiet.
   const shown: Phase = phase === "listening" && summary.stage === "BOOKING" ? "thinking" : phase;
 
-  return { phase: shown, ...summary, timeline, interim, start, end, levels };
+  return { phase: shown, ...summary, timeline, interim, canResume, start, end, levels };
 }

@@ -1,29 +1,9 @@
 @import "tailwindcss";
 
-/* The Dusk theme is switched on by data-theme="dusk" on the page. Use it as dusk:class. */
-@custom-variant dusk (&:where([data-theme="dusk"], [data-theme="dusk"] *));
-
 /* ---------- Colours ---------- */
-/* Warm peach and gold on a pearly background. Dusk keeps the same warmth on a deep blue. */
+/* Deep dusk blue lit with warm peach and gold. */
 :root {
-  --ink: #43302a;
-  --muted: #8f7a6e;
-  --glass-top: rgba(255, 255, 255, 0.72);
-  --glass-bottom: rgba(255, 244, 235, 0.38);
-  --glass-line: rgba(255, 255, 255, 0.85);
-  --shadow: rgba(176, 108, 62, 0.28);
-  --tile: rgba(160, 120, 90, 0.1);
-  --good: #3f9a62;
-  --warn: #d38a2d;
-  --bad: #d4574d;
-  --scene-a: #ffe1cc;
-  --scene-b: #e6e0f3;
-  --scene-c: #ffd6b3;
-  --scene-base-1: #fdf4ec;
-  --scene-base-2: #ece6f2;
-}
-
-:root[data-theme="dusk"] {
+  color-scheme: dark;
   --ink: #f7ece3;
   --muted: #b8a698;
   --glass-top: rgba(255, 255, 255, 0.11);

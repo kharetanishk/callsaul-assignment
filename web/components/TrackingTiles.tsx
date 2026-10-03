@@ -2,7 +2,7 @@
 const LENGTH = 8;
 
 const TILE = "grid h-12 w-[38px] place-items-center rounded-xl font-mono text-xl font-bold transition-all max-[900px]:h-[42px] max-[900px]:w-8 max-[900px]:text-lg";
-const FILLED = `${TILE} animate-pop border border-line bg-linear-to-br from-white/90 to-[#ffe6cd]/60 shadow-[0_8px_14px_-6px_var(--shadow),0_1px_0_#fff_inset] dusk:from-white/20 dusk:to-[#ffc896]/10`;
+const FILLED = `${TILE} animate-pop border border-line bg-linear-to-br from-white/20 to-[#ffc896]/10 shadow-[0_8px_14px_-6px_var(--shadow),0_1px_0_rgba(255,255,255,0.35)_inset]`;
 
 export function TrackingTiles({ id }: { id: string }) {
   return (
@@ -12,8 +12,8 @@ export function TrackingTiles({ id }: { id: string }) {
         const style = !char
           ? `${TILE} bg-tile shadow-[0_2px_6px_rgba(120,80,50,0.12)_inset]`
           : index < 2
-            ? `${FILLED} text-[#c8602f] dusk:text-peach`
-            : `${FILLED} text-[#a9791d] dusk:text-[#f6c768]`;
+            ? `${FILLED} text-peach`
+            : `${FILLED} text-[#f6c768]`;
         return (
           <span key={`${index}-${char ?? ""}`} className={style}>
             {char}

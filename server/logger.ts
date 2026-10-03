@@ -30,6 +30,7 @@ function clock() {
 
 // callId separates the lines of calls that overlap. It is the first characters of the session id.
 export function log(scope: Scope, message: string, level: Level = "info", callId?: string) {
+  if (process.env.NODE_ENV === "test") return;
   const label = color(SCOPE_COLOURS[scope], bold(scope.padEnd(8)));
   const tag = callId ? dim(`[${callId}] `) : "";
   const levelColour = LEVEL_COLOURS[level];

@@ -4,12 +4,12 @@ import { Stepper } from "./components/Stepper";
 import { StressTest } from "./components/StressTest";
 import { Timeline } from "./components/Timeline";
 import { TrackingTiles } from "./components/TrackingTiles";
-import { useTheme } from "./theme";
 import { useCall, type Phase } from "./useCall";
 
 const PHASE_TEXT: Record<Phase, { title: string; caption: string }> = {
   idle: { title: "Ready", caption: "Press start, then say your tracking ID." },
   connecting: { title: "Connecting", caption: "Setting up the microphone and the line." },
+  reconnecting: { title: "Reconnecting", caption: "The line dropped. We will pick up where we left off." },
   listening: { title: "Listening", caption: "Go ahead, I am listening." },
   thinking: { title: "Thinking", caption: "Working on it, one moment." },
   speaking: { title: "Speaking", caption: "You can interrupt me at any time." },
@@ -24,7 +24,6 @@ const responseLevel = (ms: number) => (ms < SLOW_RESPONSE_MS ? "good" : ms < BAD
 
 export function App() {
   const call = useCall();
-  const [theme, setTheme] = useTheme();
   const active = call.phase !== "idle";
   const text = PHASE_TEXT[call.phase];
   const stage = useRef<HTMLElement>(null);
@@ -57,22 +56,9 @@ export function App() {
           </div>
         </div>
         <div className="flex items-center gap-2.5">
-          <div className="glass inline-flex rounded-full p-[3px]" role="group" aria-label="Theme">
-            {(["light", "dusk"] as const).map((name) => (
-              <button
-                key={name}
-                type="button"
-                aria-pressed={theme === name}
-                onClick={() => setTheme(name)}
-                className={`cursor-pointer rounded-full px-3 py-1 text-[12.5px] ${theme === name ? "gold-surface font-semibold" : "text-muted"}`}
-              >
-                {name === "light" ? "Day" : "Dusk"}
-              </button>
-            ))}
-          </div>
           <span className={`glass inline-flex items-center gap-2 rounded-full px-3.5 py-[7px] text-[13px] ${active ? "text-ink" : "text-muted"}`}>
-            <span className={`size-2 rounded-full ${active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
-            {active ? "On a call" : "Not connected"}
+            <span className={`size-2 rounded-full ${call.phase === "reconnecting" ? "animate-live bg-warn" : active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
+            {call.phase === "reconnecting" ? "Reconnecting" : active ? "On a call" : "Not connected"}
           </span>
         </div>
       </header>
@@ -89,7 +75,7 @@ export function App() {
           </div>
 
           <div className="animate-rise min-h-[58px]" key={call.phase}>
-            <h2 className="bg-linear-to-r from-[#c6742f] via-[#e8a34a] to-[#d9728a] bg-clip-text dusk:from-[#ffb680] dusk:via-[#ffd98a] dusk:to-[#ff9aa8] text-2xl font-bold tracking-tight text-transparent">{text.title}</h2>
+            <h2 className="bg-linear-to-r from-[#ffb680] via-[#ffd98a] to-[#ff9aa8] bg-clip-text text-2xl font-bold tracking-tight text-transparent">{text.title}</h2>
             <p className="text-sm text-muted">{text.caption}</p>
           </div>
 
@@ -100,7 +86,7 @@ export function App() {
               active ? "glass text-ink shadow-[0_12px_24px_-10px_rgba(212,87,77,0.5)]" : "gold-surface border-0"
             }`}
           >
-            {active ? "End call" : "Start call"}
+            {active ? "End call" : call.canResume ? "Resume call" : "Start call"}
           </button>
 
           <TrackingTiles id={call.trackingId} />

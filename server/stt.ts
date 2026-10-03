@@ -64,7 +64,9 @@ export function createStt(apiKey: string, handlers: Handlers): Stt {
     send: (audio) => (socket.readyState === WebSocket.OPEN ? socket.send(audio) : waiting.push(audio)),
     close: () => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "CloseStream" }));
+      // Closing a socket that is still opening reports an error. That is expected here, so it is not reported.
       socket.onclose = null;
+      socket.onerror = null;
       socket.close();
     },
   };

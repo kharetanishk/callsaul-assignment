@@ -47,7 +47,10 @@ export function Timeline({ items, interim }: Props) {
   const shown = technical ? items : items.filter((item) => !item.technical);
 
   // Scroll only the feed. scrollIntoView would also move the whole page.
-  useEffect(() => feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: "smooth" }), [shown.length, interim]);
+  // The braces matter: scrollTo returns a Promise in current browsers, and an effect must not return one.
+  useEffect(() => {
+    feed.current?.scrollTo({ top: feed.current.scrollHeight, behavior: "smooth" });
+  }, [shown.length, interim]);
 
   return (
     <section className="glass rounded-[26px] p-5">

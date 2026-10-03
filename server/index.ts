@@ -1,5 +1,7 @@
 import index from "../web/index.html";
 import { startCall, type Call } from "./call";
+import type { ClientMessage } from "./protocol";
+import { discardSession, releaseSession } from "./session";
 import { createBackend, type Mode } from "./fakeBackend";
 import { createLlm } from "./llm";
 import { banner, log } from "./logger";
@@ -17,6 +19,9 @@ const llmModel = process.env.OPENROUTER_MODEL ?? "google/gemma-4-26b-a4b-it:free
 const llm = openRouterKey ? createLlm(openRouterKey, llmModel) : undefined;
 
 const MODES: Mode[] = ["ok", "slow", "fail", "lostack", "hang"];
+
+// The connection that currently owns each call. A call that reconnects replaces its old connection.
+const activeCalls = new Map<string, Call>();
 
 Bun.serve<SocketData>({
   port,
@@ -44,13 +49,28 @@ Bun.serve<SocketData>({
   },
   websocket: {
     open(ws) {
-      ws.data.call = startCall(ws, ws.data.sessionId, { backend, llm, deepgramKey });
+      const { sessionId } = ws.data;
+      activeCalls.get(sessionId)?.end();
+      ws.data.call = startCall(ws, sessionId, { backend, llm, deepgramKey });
+      activeCalls.set(sessionId, ws.data.call);
     },
     message(ws, data) {
-      if (typeof data !== "string") ws.data.call?.sendAudio(data);
+      if (typeof data !== "string") return ws.data.call?.sendAudio(data);
+      const message: ClientMessage = JSON.parse(data);
+      if (message.type === "hangup") {
+        ws.data.call?.end();
+        activeCalls.delete(ws.data.sessionId);
+        discardSession(ws.data.sessionId);
+        log("CALL", "the caller ended the call", "good", ws.data.sessionId.slice(0, 4));
+      }
     },
     close(ws) {
       ws.data.call?.end();
+      // Only the connection that owns the call may start the countdown. An old one may close after a newer one took over.
+      if (activeCalls.get(ws.data.sessionId) === ws.data.call) {
+        activeCalls.delete(ws.data.sessionId);
+        releaseSession(ws.data.sessionId);
+      }
     },
   },
 });

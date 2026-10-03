@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { startCall } from "../server/call";
-import { createBackend } from "../server/fakeBackend";
+import { createBackend, type Backend } from "../server/fakeBackend";
 import type { ServerMessage } from "../server/protocol";
 import type { createStt } from "../server/stt";
 
@@ -9,13 +9,14 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 type Handlers = Parameters<typeof createStt>[1];
 
 // A call with fake speech services: the agent "speaks" 20 chunks, 20 ms apart.
-function setup(silenceMs?: number) {
+function setup(silenceMs?: number, again?: { sessionId: string; backend: Backend }) {
   const messages: ServerMessage[] = [];
   const audio: Uint8Array[] = [];
   let handlers!: Handlers;
 
-  const backend = createBackend({ normalMs: 1 });
-  backend.forced = "ok";
+  const backend = again?.backend ?? createBackend({ normalMs: 1, slowMs: 150 });
+  if (!again) backend.forced = "ok";
+  const sessionId = again?.sessionId ?? `test-${Math.random()}`;
 
   const socket = {
     send: (data: string | Uint8Array) => {
@@ -36,11 +37,11 @@ function setup(silenceMs?: number) {
     },
   };
 
-  const call = startCall(socket, `test-${Math.random()}`, { backend, deepgramKey: "x", silenceMs }, services);
+  const call = startCall(socket, sessionId, { backend, deepgramKey: "x", silenceMs }, services);
   const types = () => messages.map((message) => message.type);
   const lastState = () => messages.findLast((m) => m.type === "state") as Extract<ServerMessage, { type: "state" }>;
   const spoken = () => messages.filter((m) => m.type === "agent").map((m) => (m as { text: string }).text);
-  return { call, messages, audio, handlers: () => handlers, types, lastState, spoken };
+  return { call, backend, sessionId, messages, audio, handlers: () => handlers, types, lastState, spoken };
 }
 
 test("speaks the greeting, then listens", async () => {
@@ -121,4 +122,63 @@ test("a caller who speaks is not nagged", async () => {
   await sleep(300);
   expect(spoken().some((text) => text.startsWith("Sorry, I cannot hear you."))).toBe(false);
   call.end();
+});
+
+test("a caller who reconnects is welcomed back and the conversation carries on", async () => {
+  const first = setup();
+  await sleep(100);
+  first.handlers().onFinal("B as in Bravo D as in Delta four one eight two zero seven");
+  await sleep(100);
+  first.call.end();
+
+  const second = setup(undefined, first);
+  await sleep(100);
+  expect(second.spoken()[0]).toContain("Welcome back");
+  expect(second.spoken()[0]).toContain("Is that correct");
+  expect(second.spoken().join(" ")).not.toContain("Hi, I can reschedule");
+  expect(second.lastState().trackingId).toBe("BD418207");
+
+  await sleep(600);
+  second.handlers().onFinal("yes");
+  await sleep(100);
+  expect(second.lastState().stage).toBe("OFFER_SLOTS");
+  second.call.end();
+});
+
+test("the old connection says nothing once it has dropped", async () => {
+  const first = setup();
+  await sleep(100);
+  first.call.end();
+  const before = first.messages.length;
+  const audioBefore = first.audio.length;
+  first.handlers().onFinal("B as in Bravo D as in Delta four one eight two zero seven");
+  await sleep(300);
+  expect(first.messages.length).toBe(before);
+  expect(first.audio.length).toBe(audioBefore);
+});
+
+test("a booking that finishes while the line is down is reported on reconnect, and made only once", async () => {
+  const first = setup();
+  const say = async (text: string) => {
+    first.handlers().onFinal(text);
+    await sleep(80);
+  };
+  await sleep(100);
+  await say("B as in Bravo D as in Delta four one eight two zero seven");
+  await say("yes");
+  await say("the second one");
+  first.backend.forced = "slow";
+  await say("yes");
+  expect(first.lastState().stage).toBe("BOOKING");
+
+  first.call.end();
+  const second = setup(undefined, first);
+  await sleep(500);
+
+  const welcome = second.spoken()[0]!;
+  expect(welcome).toContain("Welcome back");
+  expect(welcome).toContain("You are all set");
+  expect(first.spoken().some((text) => text.includes("You are all set"))).toBe(false);
+  expect(first.backend.bookings.size).toBe(1);
+  second.call.end();
 });
