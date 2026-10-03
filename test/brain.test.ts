@@ -475,3 +475,11 @@ test("two letters written as one word are read as letters", async () => {
   expect(updateId("", "ab nine zero nine five nine one")).toBe("AB909591");
   expect(updateId("", "it is nine zero nine five")).not.toStartWith("IS");
 });
+
+test("an LLM answer that claims to change the ID or book something is not spoken", async () => {
+  const llm: Llm = async () => "I'll change the second character. Your slot is booked.";
+  const { said, talk } = setup([], llm);
+  await talk(FULL_ID, "purple banana window");
+  expect(said.at(-1)).not.toContain("change the second character");
+  expect(said.at(-1)).not.toContain("booked");
+});

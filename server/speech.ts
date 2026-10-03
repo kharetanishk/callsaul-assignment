@@ -1,5 +1,6 @@
 // Helpers for telling a caller who is answering us apart from noise, echo and people in the background.
 import type { Stage } from "./session";
+import { matchIntent } from "./intents";
 import { hasIdSpeech } from "./trackingId";
 
 const FILLER_WORDS = new Set(["um", "uh", "hmm", "mm", "mhm", "ah", "er", "oh"]);
@@ -13,7 +14,7 @@ export const MIN_BARGE_IN_CONFIDENCE = 0.6;
 const MAX_SHORT_ANSWER_WORDS = 5;
 
 const CONTROL_WORDS =
-  /\b(yes|yeah|yep|yup|no|nope|nah|not|wrong|correct|right|stop|wait|hold on|hang on|repeat|again|pardon|sorry|actually|cancel|start over|bye|goodbye|thanks|thank you|okay|ok|sure|please|hello|hi|help|huh|confused|understand)\b/i;
+  /\b(yes|yeah|yep|yup|no|nope|nah|not|wrong|correct|right|stop|wait|hold on|hang on|repeat|again|pardon|sorry|actually|cancel|start over|bye|goodbye|thanks|thank you|okay|ok|sure|please|hello|hi|hey|help|huh|confused|understand)\b/i;
 const SLOT_WORDS =
   /\b(first|second|third|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|other|another|different|earlier|later)\b/i;
 const QUESTION_START = /^(what|who|why|how|when|where|can|could|do|does|is|are|will|would|should|may)\b/i;
@@ -55,7 +56,7 @@ export function isEcho(words: string[], agentText: string): boolean {
 export function isRelevant(text: string, stage: Stage): boolean {
   // "wait wait wait" is one word said three times, still a short answer.
   const short = new Set(realWords(text)).size <= MAX_SHORT_ANSWER_WORDS;
-  if ((short && CONTROL_WORDS.test(text)) || isQuestion(text) || wantsNewId(text)) return true;
+  if ((short && CONTROL_WORDS.test(text)) || isQuestion(text) || wantsNewId(text) || matchIntent(text)) return true;
   // An ID can be changed at any step, so ID speech always counts.
   if (hasIdSpeech(text)) return true;
   return (stage === "OFFER_SLOTS" || stage === "CONFIRM_SLOT") && SLOT_WORDS.test(text);

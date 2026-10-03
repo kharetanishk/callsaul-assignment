@@ -1,11 +1,11 @@
 // One phone call: caller audio in, agent speech out.
-import { greet, handleTurn, type Deps } from "./brain";
+import { greet, handleTurn, isMeantForAgent, sayGoodbye, type Deps } from "./brain";
 import type { Backend, CallKind, Mode } from "./fakeBackend";
 import type { Llm } from "./llm";
 import { log, type Level, type Scope } from "./logger";
 import type { ServerMessage } from "./protocol";
 import { getSession } from "./session";
-import { isInterruption, isRelevant } from "./speech";
+import { isInterruption, isRelevant, realWords } from "./speech";
 import { createStt } from "./stt";
 import { isValid, looksLikeIdStart, updateId } from "./trackingId";
 import { synthesize, TTS_SAMPLE_RATE } from "./tts";
@@ -35,6 +35,9 @@ const MAX_REMINDERS = 3;
 const RECOVER_MS = 3500;
 // After this many chunks of talk that is not about the call in a row, the agent says it is hearing other voices.
 const BACKGROUND_CHUNKS_BEFORE_NOTICE = 3;
+// While the agent waits, speech this short and this clear might be the caller even if it matches no rule.
+const MAYBE_CALLER_MAX_WORDS = 12;
+const MAYBE_CALLER_MIN_CONFIDENCE = 0.8;
 
 const BACKEND_CALL_NAMES: Record<CallKind, string> = { slots: "Slot lookup", book: "Booking request", status: "Status check" };
 const BACKEND_BEHAVIOURS: Record<Mode, string> = {
@@ -83,12 +86,28 @@ export function startCall(
   const sendState = () =>
     send({ type: "state", stage: session.stage, trackingId: session.trackingId, idConfirmed: session.idConfirmed, bookings: backend.bookings.size });
 
+  let hangingUp = false;
+
   const deps: Deps = {
     backend,
     llm,
     say: (text) => speak(text),
     log: (kind, text) => tell(kind, text),
+    hangUp,
   };
+
+  // Lets the goodbye finish playing, then tells the page to end the call.
+  function hangUp() {
+    if (hangingUp) return;
+    hangingUp = true;
+    clearTimeout(silenceTimer);
+    void speechQueue.then(() => {
+      setTimeout(() => {
+        tell("good", "The agent ended the call after saying goodbye", "CALL");
+        send({ type: "hangup" });
+      }, Math.max(0, speakingUntil - Date.now()));
+    });
+  }
 
   // Shows a line in the browser timeline and in the server terminal.
   function tell(kind: Level, text: string, scope: Scope = "BRAIN") {
@@ -155,7 +174,13 @@ export function startCall(
   // Never leave the caller in silence: if they say nothing, say we cannot hear them and ask again.
   function waitForCaller() {
     clearTimeout(silenceTimer);
-    if (reminders >= MAX_REMINDERS || session.stage === "DONE") return;
+    if (hangingUp) return;
+    // After the booking, silence means the caller is done, so say goodbye instead of nagging.
+    if (session.stage === "DONE") {
+      silenceTimer = setTimeout(() => sayGoodbye({ session, deps, say: speak }), silenceMs);
+      return;
+    }
+    if (reminders >= MAX_REMINDERS) return;
     const patience = Math.max(0, (session.holdUntil ?? 0) - Date.now());
     silenceTimer = setTimeout(remind, silenceMs + Math.max(0, speakingUntil - Date.now()) + patience);
   }
@@ -209,16 +234,33 @@ export function startCall(
       }
       interrupt();
     } else if (!isRelevant(text, session.stage)) {
-      // Talk that has nothing to do with the call, like people in the background, is dropped here, so it never
-      // piles up around the caller's own words.
-      tell("info", `Ignored "${text}", it sounded like talk between other people`, "LISTEN");
-      if (++backgroundChunks >= BACKGROUND_CHUNKS_BEFORE_NOTICE && !backgroundNoticeGiven && !heardText) {
-        backgroundNoticeGiven = true;
-        speak("I can hear other people talking nearby. If you can, please move away from them or speak closer to the microphone.", true);
-        return;
-      }
-      return recoverNow();
+      // The agent is waiting, so the caller is the most likely speaker. Short, clear speech gets a second opinion
+      // before it is dropped. Long or doubtful talk is treated as people in the background.
+      const maybeCaller = realWords(text).length <= MAYBE_CALLER_MAX_WORDS && confidence >= MAYBE_CALLER_MIN_CONFIDENCE;
+      if (maybeCaller) return void checkMaybeCaller(text, confidence, endOfSpeech);
+      return ignoreBackground(text);
     }
+    accept(text, confidence, endOfSpeech);
+  }
+
+  async function checkMaybeCaller(text: string, confidence: number, endOfSpeech: boolean) {
+    if (await isMeantForAgent(session, text, deps)) return accept(text, confidence, endOfSpeech);
+    ignoreBackground(text);
+  }
+
+  // Talk that has nothing to do with the call is dropped here, so it never piles up around the caller's own words.
+  function ignoreBackground(text: string) {
+    tell("info", `Ignored "${text}", it sounded like talk between other people`, "LISTEN");
+    if (++backgroundChunks >= BACKGROUND_CHUNKS_BEFORE_NOTICE && !backgroundNoticeGiven && !heardText) {
+      backgroundNoticeGiven = true;
+      speak("I can hear other people talking nearby. If you can, please move away from them or speak closer to the microphone.", true);
+      return;
+    }
+    recoverNow();
+  }
+
+  // Speech the agent will answer.
+  function accept(text: string, confidence: number, endOfSpeech: boolean) {
     backgroundChunks = 0;
 
     reminders = 0;

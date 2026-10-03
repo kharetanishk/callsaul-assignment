@@ -21,7 +21,7 @@ const INTENTS: { name: string; match: RegExp; reply?: string }[] = [
     reply: "I cannot quote prices or fees. I can only reschedule the delivery." },
   { name: "how it works", match: /\b(how long|how does (this|it) work|what can you do|what is this (for|about)|why (do you|are you) (need|asking)|what do you need)\b/i,
     reply: "I just need your tracking ID, then I will offer you some new delivery slots. It only takes a minute or so." },
-  { name: "goodbye", match: /\b(goodbye|bye|hang up|that'?s all|never ?mind|forget it|i'?ll call (you )?(back|later))\b/i },
+  { name: "goodbye", match: /\b(goodbye|bye|hang up|end (the|this|up the) call|(cut|close|finish|stop) (the|this) call|that'?s (all|it)|we'?re done|i'?m done|no thanks|nothing else|never ?mind|forget it|you can go|i'?ll call (you )?(back|later))\b/i },
   { name: "repeat", match: /\b(repeat|say (that|it) (again|once more)|come again|pardon|what did you say|didn'?t (hear|catch|get)|what was that|sorry,? what)\b/i },
   { name: "wait", match: /\b(wait|hold on|hang on|one (moment|sec|second|minute)|just a (moment|sec|second|minute)|give me a (moment|sec|second|minute|bit)|let me (find|check|look|get|see|grab))\b/i },
   { name: "thanks", match: /\b(thanks|thank you|cheers)\b/i, reply: "You are welcome." },

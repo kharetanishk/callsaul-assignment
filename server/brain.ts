@@ -12,6 +12,8 @@ export type Deps = {
   log: (kind: LogKind, text: string) => void;
   llm?: Llm;
   timing?: Options;
+  // Ends the call once the goodbye has been spoken.
+  hangUp?: () => void;
 };
 
 type Ctx = { session: Session; deps: Deps; say: (text: string) => void };
@@ -68,6 +70,9 @@ function speak(session: Session, deps: Deps, text: string) {
 async function route(ctx: Ctx, text: string) {
   const { session, say } = ctx;
 
+  // "you can end the call" works at any step.
+  if (matchIntent(text)?.name === "goodbye") return sayGoodbye(ctx);
+
   if (START_OVER.test(text)) {
     clearBookingState(session);
     return say("No problem, let's start again. What is your tracking ID?");
@@ -106,7 +111,40 @@ async function route(ctx: Ctx, text: string) {
     case "OFFER_SLOTS": return chooseSlot(ctx, text);
     case "CONFIRM_SLOT": return confirmSlot(ctx, text);
     case "BOOKING": return retryBooking(ctx, text);
-    case "DONE": return say("You are all set. Goodbye.");
+    case "DONE": return afterBooking(ctx, text);
+  }
+}
+
+// The booking is done and the agent asked "anything else?".
+async function afterBooking(ctx: Ctx, text: string) {
+  if (isQuestion(text)) return fallback(ctx, text);
+  if (isYes(text)) return ctx.say("Sure. If you have another parcel to reschedule, tell me its tracking ID.");
+  sayGoodbye(ctx);
+}
+
+export function sayGoodbye({ session, deps, say }: Ctx) {
+  const booked = session.booking?.status === "done";
+  session.stage = "DONE";
+  deps.log("good", "The call is ending with a goodbye");
+  say(booked ? "Thanks for calling, have a great day. Goodbye." : "Okay, thanks for calling. Goodbye.");
+  deps.hangUp?.();
+}
+
+// Speech that might be background talk. Rules answer the easy cases. Otherwise the LLM decides whether it was said
+// to the agent. Without an LLM it is treated as not meant for the agent.
+export async function isMeantForAgent(session: Session, text: string, deps: Deps): Promise<boolean> {
+  if (matchIntent(text)) return true;
+  if (!deps.llm) return false;
+  const system =
+    `You are listening on a phone call between a delivery rescheduling agent and a caller. The agent last said: "${session.lastSaid}". ` +
+    "There may also be other people talking near the caller. Decide if the next words were said by the caller to the agent. " +
+    "Reply with exactly YES or NO.";
+  try {
+    const answer = await deps.llm(system, [{ role: "user", content: text }]);
+    return /^\s*yes/i.test(answer);
+  } catch (error) {
+    deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
+    return false;
   }
 }
 
@@ -284,7 +322,7 @@ async function book(ctx: Ctx, slot: Slot) {
   if (booking.status === "done") {
     session.stage = "DONE";
     deps.log("good", `Booked ${slot.label}, reference ${booking.ref}`);
-    return say(`You are all set. Your delivery is booked for ${slot.label}. Your reference is ${booking.ref!.replace("-", " ")}.`);
+    return say(`You are all set. Your delivery is booked for ${slot.label}. Your reference is ${booking.ref!.replace("-", " ")}. Is there anything else I can help with?`);
   }
   if (booking.status === "failed") {
     session.stage = "CONFIRM_SLOT";
@@ -332,8 +370,7 @@ function answerIntent({ session, deps, say }: Ctx, intent: Intent) {
   deps.log("info", `Caller asked for: ${intent.name}`);
   switch (intent.name) {
     case "goodbye":
-      session.stage = "DONE";
-      return say("Okay, goodbye.");
+      return sayGoodbye({ session, deps, say });
     case "wait":
       session.holdUntil = Date.now() + HOLD_MS;
       return say("Of course, take your time. I will be here.");
@@ -378,9 +415,10 @@ function cleanAnswer(raw: string): string | undefined {
   if (!text) return;
   if (text.toUpperCase().startsWith(IGNORE)) return IGNORE;
   // The system asks the next question itself, so any sentence in the answer that asks something is dropped.
+  // So is anything that claims to change the ID or the booking, because only the system can do that.
   const sentences = text
     .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b|\bas in\b|\d/i.test(sentence))
+    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b|\bas in\b|\d|\b(character|letter|digit|change|changed|update|updated|correct(ed)?|book(ed)?|slot)\b/i.test(sentence))
     .slice(0, 2)
     .join(" ");
   if (!sentences) return;

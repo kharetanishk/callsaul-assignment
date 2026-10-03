@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { startCall } from "../server/call";
 import { createBackend, type Backend } from "../server/fakeBackend";
+import type { Llm } from "../server/llm";
 import type { ServerMessage } from "../server/protocol";
 import type { createStt } from "../server/stt";
 
@@ -9,7 +10,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 type Handlers = Parameters<typeof createStt>[1];
 
 // A call with fake speech services: the agent "speaks" 20 chunks, 20 ms apart.
-function setup(silenceMs?: number, again?: { sessionId: string; backend: Backend }, recoverMs?: number, idPauseMs?: number) {
+function setup(silenceMs?: number, again?: { sessionId: string; backend: Backend }, recoverMs?: number, idPauseMs?: number, llm?: Llm) {
   const messages: ServerMessage[] = [];
   const audio: Uint8Array[] = [];
   let handlers!: Handlers;
@@ -37,7 +38,7 @@ function setup(silenceMs?: number, again?: { sessionId: string; backend: Backend
     },
   };
 
-  const call = startCall(socket, sessionId, { backend, deepgramKey: "x", silenceMs, recoverMs, idPauseMs }, services);
+  const call = startCall(socket, sessionId, { backend, deepgramKey: "x", silenceMs, recoverMs, idPauseMs, llm }, services);
   const types = () => messages.map((message) => message.type);
   const lastState = () => messages.findLast((m) => m.type === "state") as Extract<ServerMessage, { type: "state" }>;
   const spoken = () => messages.filter((m) => m.type === "agent").map((m) => (m as { text: string }).text);
@@ -297,4 +298,89 @@ test("an unfinished ID is read back once the caller really has stopped", async (
   await sleep(300);
   expect(spoken().some((text) => text.includes("What comes next"))).toBe(true);
   call.end();
+});
+
+// Replays the call from the log: the booking failed, then the caller asked to end the call.
+async function toFailedBooking() {
+  const call = setup();
+  const say = async (text: string) => {
+    call.handlers().onFinal(text, 1, true);
+    await sleep(700);
+  };
+  await sleep(600);
+  await say("B as in Bravo D as in Delta four one eight two zero seven");
+  await say("yes");
+  await say("the second one");
+  call.backend.forced = "fail";
+  await say("yes");
+  await sleep(1500);
+  return { ...call, say };
+}
+
+test("no, you can end up the call: the agent says goodbye and hangs up, it is not treated as someone else", async () => {
+  const { say, spoken, types, messages } = await toFailedBooking();
+  expect(spoken().at(-1)).toContain("nothing has been booked");
+  await say("no you can end up the call");
+  await sleep(700);
+  expect(spoken().at(-1)).toContain("Goodbye");
+  expect(types()).toContain("hangup");
+  expect(messages.some((m) => m.type === "log" && m.text.includes("talk between other people"))).toBe(false);
+}, 15000);
+
+test("after a booking, the agent asks if there is anything else, and a no ends the call gracefully", async () => {
+  const call = setup();
+  const say = async (text: string) => {
+    call.handlers().onFinal(text, 1, true);
+    await sleep(700);
+  };
+  await sleep(600);
+  await say("B as in Bravo D as in Delta four one eight two zero seven");
+  await say("yes");
+  await say("the second one");
+  await say("yes");
+  expect(call.spoken().at(-1)).toContain("anything else");
+  await say("no thanks");
+  await sleep(700);
+  expect(call.spoken().at(-1)).toContain("Goodbye");
+  expect(call.types()).toContain("hangup");
+}, 15000);
+
+test("after a booking, silence ends the call with a goodbye instead of nagging", async () => {
+  const call = setup(1500);
+  const say = async (text: string) => {
+    call.handlers().onFinal(text, 1, true);
+    await sleep(700);
+  };
+  await sleep(600);
+  await say("B as in Bravo D as in Delta four one eight two zero seven");
+  await say("yes");
+  await say("the second one");
+  await say("yes");
+  await sleep(2600);
+  expect(call.spoken().some((text) => text.includes("cannot hear you"))).toBe(false);
+  expect(call.spoken().at(-1)).toContain("Goodbye");
+  expect(call.types()).toContain("hangup");
+}, 15000);
+
+test("short clear speech that matches no rule is checked with the LLM before it is ignored", async () => {
+  const askedAbout: string[] = [];
+  const llm: Llm = async (_system, turns) => {
+    askedAbout.push(turns.at(-1)!.content);
+    return "YES";
+  };
+  const call = setup(undefined, undefined, undefined, undefined, llm);
+  await sleep(600);
+  call.handlers().onFinal("honestly I am not so sure about this", 0.95, true);
+  await sleep(200);
+  expect(askedAbout).toContain("honestly I am not so sure about this");
+  expect(call.types()).toContain("user");
+});
+
+test("if the LLM says it was not meant for the agent, it is ignored", async () => {
+  const llm: Llm = async () => "NO";
+  const call = setup(undefined, undefined, undefined, undefined, llm);
+  await sleep(600);
+  call.handlers().onFinal("did you see what happened last night", 0.95, true);
+  await sleep(200);
+  expect(call.types()).not.toContain("user");
 });

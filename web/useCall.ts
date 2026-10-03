@@ -68,6 +68,8 @@ export function useCall() {
   const asking = useRef(false);
   const startedAt = useRef(0);
   const nextId = useRef(0);
+  // end is defined further down, and messages need to reach it.
+  const endRef = useRef(() => {});
   const gapTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const addToTimeline = useCallback((kind: TimelineItem["kind"], text: string, technical = false) => {
@@ -98,6 +100,8 @@ export function useCall() {
         case "metric":
           if (message.name === "response") setSummary((old) => ({ ...old, responseMs: message.ms }));
           return;
+        case "hangup":
+          return endRef.current();
         case "stop_audio":
           call.current?.player.stop();
           speechSynthesis.cancel();
@@ -130,6 +134,8 @@ export function useCall() {
     setPhase("idle");
     setInterim("");
   }, []);
+
+  endRef.current = end;
 
   // Opens the connection for the current call. If it drops, tries again with the same session id.
   const connect = useCallback(() => {
