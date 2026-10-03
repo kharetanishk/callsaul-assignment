@@ -144,7 +144,7 @@ test("still replies when the LLM fails", async () => {
     throw new Error("down");
   };
   const { said, talk } = setup([], llm);
-  await talk("hello there");
+  await talk("purple banana window");
   expect(said.at(-1)).toContain("did not catch that");
 });
 
@@ -153,4 +153,263 @@ test("start over resets the call", async () => {
   await talk(FULL_ID, "yes", "start over");
   expect(session.stage).toBe("ASK_ID");
   expect(session.trackingId).toBe("");
+});
+
+const neverCalled: Llm = async () => {
+  throw new Error("the LLM should not be needed for this");
+};
+
+test("who are you is answered from rules, without the LLM, then the agent asks again", async () => {
+  const { said, talk } = setup([], neverCalled);
+  await talk("wait, who am I talking to?");
+  expect(said.at(-1)).toContain("automated assistant");
+  expect(said.at(-1)).toContain("tracking ID");
+});
+
+test("a request for a human is answered honestly", async () => {
+  const { said, talk } = setup([], neverCalled);
+  await talk("can I speak to a real person");
+  expect(said.at(-1)).toContain("cannot transfer");
+});
+
+test("questions the agent cannot answer are not made up", async () => {
+  const { said, talk } = setup([], neverCalled);
+  await talk("where is my parcel right now");
+  expect(said.at(-1)).toMatch(/cannot look up/);
+  await talk("how much does this cost");
+  expect(said.at(-1)).toMatch(/cannot quote/);
+});
+
+test("hold on makes the agent wait quietly", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk("hold on a second, let me find it");
+  expect(said.at(-1)).toContain("take your time");
+  expect(session.holdUntil!).toBeGreaterThan(Date.now());
+});
+
+test("repeat says the last thing again without piling up", async () => {
+  const { session, said, talk } = setup();
+  session.lastSaid = "Please say your tracking ID.";
+  await talk("sorry, can you repeat that");
+  await talk("say that again");
+  expect(said.at(-1)).toBe("Sure. Please say your tracking ID.");
+});
+
+test("goodbye ends the call", async () => {
+  const { session, talk } = setup();
+  await talk("never mind, goodbye");
+  expect(session.stage).toBe("DONE");
+});
+
+test("the LLM sees the conversation so far, and its answer is cleaned up", async () => {
+  let seen: { role: string; content: string }[] = [];
+  const llm: Llm = async (_system, turns) => {
+    seen = turns;
+    return "**Sure thing!** It is a quick call. Second sentence. Third sentence.";
+  };
+  const { said, talk } = setup([], llm);
+  await talk("what is the weather like");
+  expect(seen.at(-1)).toEqual({ role: "user", content: "what is the weather like" });
+  expect(said.at(-1)).toContain("Sure thing! It is a quick call.");
+  expect(said.at(-1)).not.toContain("*");
+  expect(said.at(-1)).not.toContain("Third sentence");
+});
+
+test("the LLM can say a remark was not meant for the agent, and then the agent stays quiet", async () => {
+  const llm: Llm = async () => "IGNORE";
+  const { said, talk } = setup([], llm);
+  await talk("I told him we would be there by six");
+  expect(said.length).toBe(0);
+});
+
+test("a yes buried in a long sentence does not confirm anything", async () => {
+  const { session, talk } = setup();
+  await talk(FULL_ID, "yes I think so but let me check with my wife first");
+  expect(session.stage).toBe("CONFIRM_ID");
+});
+
+test("people talking in the background do not change the ID", async () => {
+  const { session, talk } = setup();
+  await talk("B as in Bravo, D as in Delta, four one");
+  await talk("I will be there in one hour");
+  expect(session.trackingId).toBe("BD41");
+});
+
+test("an LLM answer that asks its own question is trimmed so the caller is not asked twice", async () => {
+  const llm: Llm = async () => "I can only help reschedule your delivery. Please give me your tracking ID. Is that okay?";
+  const { said, talk } = setup([], llm);
+  await talk("what is the capital of France");
+  const answer = said.at(-1)!;
+  expect(answer).toStartWith("I can only help reschedule your delivery.");
+  expect(answer.match(/tracking ID/gi)?.length).toBe(1);
+});
+
+test("an LLM answer made only of questions falls back to the fixed reply", async () => {
+  const llm: Llm = async () => "Could you tell me your tracking ID?";
+  const { said, talk } = setup([], llm);
+  await talk("what is the capital of France");
+  expect(said.at(-1)).toContain("I can only help with rescheduling");
+});
+
+const OTHER_ID = "A as in Alpha, K as in Kilo, five five two zero one nine";
+
+test("the ID is only confirmed after the caller says yes to it", async () => {
+  const { session, talk } = setup();
+  await talk(FULL_ID);
+  expect(session.trackingId).toBe("BD418207");
+  expect(session.idConfirmed).toBe(false);
+  await talk("yes");
+  expect(session.idConfirmed).toBe(true);
+});
+
+test("a new ID said after the old one was confirmed has to be confirmed again", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "yes");
+  expect(session.stage).toBe("OFFER_SLOTS");
+
+  await talk(OTHER_ID);
+  expect(session.trackingId).toBe("AK552019");
+  expect(session.idConfirmed).toBe(false);
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.slots).toEqual([]);
+  expect(said.at(-1)).toContain("new tracking ID");
+
+  await talk("yes");
+  expect(session.idConfirmed).toBe(true);
+  expect(session.stage).toBe("OFFER_SLOTS");
+});
+
+test("a new ID after a slot was picked drops the slot, and nothing is booked until everything is confirmed again", async () => {
+  const { backend, session, talk } = setup();
+  await talk(FULL_ID, "yes", "the second one");
+  expect(session.stage).toBe("CONFIRM_SLOT");
+
+  await talk(OTHER_ID);
+  expect(session.chosenSlotId).toBeUndefined();
+  expect(session.confirmedSlotId).toBeUndefined();
+  expect(backend.bookings.size).toBe(0);
+
+  await talk("the second one");
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(backend.bookings.size).toBe(0);
+
+  await talk("yes", "the second one", "yes");
+  expect(session.stage).toBe("DONE");
+  expect([...backend.bookings.keys()][0]).toStartWith("AK552019:");
+});
+
+test("saying you want to change the tracking ID starts the ID over", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "yes", "I want to change the whole tracking ID");
+  expect(session.stage).toBe("ASK_ID");
+  expect(session.trackingId).toBe("");
+  expect(session.idConfirmed).toBe(false);
+  expect(said.at(-1)).toContain("new tracking ID");
+
+  await talk(OTHER_ID);
+  expect(session.trackingId).toBe("AK552019");
+  expect(session.stage).toBe("CONFIRM_ID");
+});
+
+test("the new ID can be given in the same sentence as the request to change it", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "yes", `actually I want to change the tracking ID to ${OTHER_ID}`);
+  expect(session.trackingId).toBe("AK552019");
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(said.at(-1)).toContain("Is that correct");
+});
+
+test("saying the ID is wrong while it is being confirmed asks for a new one", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "no, that tracking ID is wrong");
+  expect(session.stage).toBe("ASK_ID");
+  expect(said.at(-1)).toContain("new tracking ID");
+});
+
+test("a correction made after the ID was confirmed changes it and asks again", async () => {
+  const { session, talk } = setup();
+  await talk(FULL_ID, "yes", "the third digit is 9");
+  expect(session.trackingId).toBe("BD419207");
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.idConfirmed).toBe(false);
+});
+
+test("a completely different ID while confirming is called out as a different ID", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, OTHER_ID);
+  expect(session.trackingId).toBe("AK552019");
+  expect(said.at(-1)).toContain("different ID");
+  expect(session.idConfirmed).toBe(false);
+});
+
+test("a one letter fix while confirming still says sorry about that", async () => {
+  const { said, talk } = setup();
+  await talk("D as in Delta, D as in Delta, four one eight two zero seven", "no, B as in Bravo, not D");
+  expect(said.at(-1)).toContain("Sorry about that");
+});
+
+test("a different ID said while the first one is still being collected replaces it", async () => {
+  const { session, talk } = setup();
+  await talk("B as in Bravo, D as in Delta, four one");
+  expect(session.trackingId).toBe("BD41");
+  await talk(OTHER_ID);
+  expect(session.trackingId).toBe("AK552019");
+  expect(session.stage).toBe("CONFIRM_ID");
+});
+
+test("after a booking is done a new ID starts a new request and the old booking stays", async () => {
+  const { backend, session, said, talk } = setup();
+  await talk(FULL_ID, "yes", "the second one", "yes");
+  expect(session.stage).toBe("DONE");
+  await talk("I have another parcel", OTHER_ID);
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.trackingId).toBe("AK552019");
+  expect(backend.bookings.size).toBe(1);
+  expect(said.at(-1)).toContain("Is that correct");
+});
+
+test("a new ID that arrives garbled in two pieces is put together once both pieces are heard", async () => {
+  const { session, talk } = setup();
+  await talk(FULL_ID, "yes");
+  await talk("a is in alpha k as in kilo five five two zero one nine");
+  expect(session.trackingId).toBe("AK552019");
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.idConfirmed).toBe(false);
+});
+
+test("the start of a new ID after confirmation is collected like a fresh ID", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "yes");
+  await talk("k as in kilo five five two zero one nine");
+  expect(session.stage).toBe("ASK_ID");
+  expect(said.at(-1)).toContain("from the start");
+  await talk(OTHER_ID);
+  expect(session.stage).toBe("CONFIRM_ID");
+  expect(session.trackingId).toBe("AK552019");
+});
+
+test("answers to the slot question are not mistaken for the start of an ID", async () => {
+  const { session, talk } = setup();
+  await talk(FULL_ID, "yes", "the second one");
+  expect(session.stage).toBe("CONFIRM_SLOT");
+  expect(session.trackingId).toBe("BD418207");
+  expect(session.idConfirmed).toBe(true);
+  await talk("actually saturday at four");
+  expect(session.idConfirmed).toBe(true);
+  expect(session.trackingId).toBe("BD418207");
+});
+
+test("a bare yes with nothing to confirm is not sent to the LLM", async () => {
+  const { said, talk } = setup([], neverCalled);
+  await talk(FULL_ID, "yes", "yes");
+  expect(said.at(-1)).toContain("not sure what you are answering");
+  expect(said.at(-1)).toContain("Which would you like");
+});
+
+test("just the two letters of a new ID, said after confirmation, start collecting it", async () => {
+  const { session, said, talk } = setup([], neverCalled);
+  await talk(FULL_ID, "yes", "a as in alpha k as in kilo");
+  expect(session.stage).toBe("ASK_ID");
+  expect(session.trackingId).toBe("AK");
+  expect(said.at(-1)).toContain("What comes next");
 });

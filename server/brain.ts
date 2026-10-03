@@ -1,8 +1,10 @@
 import { bookSlot, callWithRetry, startBooking, withWaitNotice, type LogKind, type Options } from "./booking";
 import type { Backend, Slot } from "./fakeBackend";
+import { matchIntent, type Intent } from "./intents";
 import type { Llm } from "./llm";
 import type { Session } from "./session";
-import { hasValidShape, ID_LENGTH, isValid, spell, updateId } from "./trackingId";
+import { isQuestion, wantsNewId } from "./speech";
+import { hasValidShape, ID_LENGTH, idCharsIn, isValid, spell, updateId } from "./trackingId";
 
 export type Deps = {
   backend: Backend;
@@ -20,16 +22,19 @@ const FILLERS = [
   "Sorry, this is taking a while. Almost there.",
 ];
 
-const LLM_SYSTEM =
-  "You are a phone agent for a courier service that reschedules deliveries. " +
-  "Reply with one short sentence and no question. If the caller asks about anything other than " +
-  "rescheduling this delivery, say you can only help with rescheduling. Never promise delivery times or prices.";
+const IGNORE = "IGNORE";
+// How long the agent waits quietly after the caller says "hold on".
+const HOLD_MS = 30_000;
+const HISTORY_TURNS = 6;
+const MAX_ANSWER_CHARS = 220;
+const MAX_YES_WORDS = 6;
 
 const YES = /\b(yes|yeah|yep|yup|sure|correct|right|confirm|confirmed|okay|ok|please do|go ahead|book it)\b/i;
 const NO = /\b(no|nope|nah|not|wrong|incorrect|dont|don't|cancel)\b/i;
 const START_OVER = /\b(start over|begin again|restart)\b/i;
 
-const isYes = (text: string) => YES.test(text) && !NO.test(text);
+// A confirmation is a short answer. A long sentence that happens to contain "yes" is probably someone else talking.
+const isYes = (text: string) => YES.test(text) && !NO.test(text) && text.trim().split(/\s+/).length <= MAX_YES_WORDS;
 const isNo = (text: string) => NO.test(text);
 
 export function greet(session: Session, deps: Deps) {
@@ -40,6 +45,7 @@ export async function handleTurn(session: Session, text: string, deps: Deps): Pr
   const ctx: Ctx = { session, deps, say: (line) => speak(session, deps, line) };
   if (session.busy) return ctx.say("Still working on it, one moment.");
 
+  remember(session, "user", text);
   session.busy = true;
   const turn = route(ctx, text).finally(() => {
     session.busy = false;
@@ -48,8 +54,14 @@ export async function handleTurn(session: Session, text: string, deps: Deps): Pr
   await turn;
 }
 
+function remember(session: Session, role: "user" | "assistant", text: string) {
+  session.history.push({ role, text });
+  session.history.splice(0, Math.max(0, session.history.length - HISTORY_TURNS * 2));
+}
+
 function speak(session: Session, deps: Deps, text: string) {
   session.lastSaid = text;
+  remember(session, "assistant", text);
   deps.say(text);
 }
 
@@ -57,8 +69,21 @@ async function route(ctx: Ctx, text: string) {
   const { session, say } = ctx;
 
   if (START_OVER.test(text)) {
-    Object.assign(session, { stage: "ASK_ID", trackingId: "", slots: [], chosenSlotId: undefined, confirmedSlotId: undefined, booking: undefined });
+    clearBookingState(session);
     return say("No problem, let's start again. What is your tracking ID?");
+  }
+
+  // The caller can change the ID at any point, not only while we are asking for it.
+  if (wantsNewId(text)) return changeId(ctx, text);
+  if (session.stage !== "ASK_ID" && session.stage !== "CONFIRM_ID") {
+    const changed = applyId(session.trackingId, text);
+    if (changed !== session.trackingId && isValid(changed)) return replaceId(ctx, changed);
+    // The start of a new ID, for example when it arrives in pieces. Collect it like a fresh ID.
+    if (startsNewId(idCharsIn(text))) {
+      ctx.deps.log("warn", "Caller started giving a new tracking ID");
+      clearBookingState(session);
+      return askId(ctx, text);
+    }
   }
 
   switch (session.stage) {
@@ -70,6 +95,54 @@ async function route(ctx: Ctx, text: string) {
     case "DONE": return say("You are all set. Goodbye.");
   }
 }
+
+// Forgets the ID and everything that depended on it, and goes back to asking for it.
+function clearBookingState(session: Session) {
+  Object.assign(session, {
+    stage: "ASK_ID",
+    trackingId: "",
+    idConfirmed: false,
+    slots: [],
+    chosenSlotId: undefined,
+    confirmedSlotId: undefined,
+    booking: undefined,
+  });
+}
+
+// "I want to change the tracking ID". Whatever was chosen for the old ID is dropped.
+function changeId(ctx: Ctx, text: string) {
+  const { session, deps, say } = ctx;
+  deps.log("warn", "Caller wants to change the tracking ID");
+  clearBookingState(session);
+  if (applyId("", text) === "") return say("No problem. What is the new tracking ID?");
+  return askId(ctx, text);
+}
+
+// The caller gave a different ID, or corrected part of it, after the old one was confirmed.
+// The new one has to be confirmed again, and the slot picked for the old one no longer counts.
+function replaceId(ctx: Ctx, id: string) {
+  const { session, deps, say } = ctx;
+  deps.log("warn", `Tracking ID changed from ${session.trackingId} to ${id}, waiting for the caller to confirm it`);
+  Object.assign(session, {
+    stage: "CONFIRM_ID",
+    trackingId: id,
+    idConfirmed: false,
+    slots: [],
+    chosenSlotId: undefined,
+    confirmedSlotId: undefined,
+    booking: undefined,
+  });
+  say(`I heard a new tracking ID. ${spell(id)}. Is that correct?`);
+}
+
+// The two letters an ID begins with, a few characters that begin with a letter, or several of any kind.
+// A lone digit is just an answer like "the second one".
+const startsNewId = (chars: string) =>
+  chars.length >= 5 || (chars.length >= 3 && /^[A-Z]/.test(chars)) || /^[A-Z]{2}/.test(chars);
+
+const changedCharacters = (a: string, b: string) => [...b].filter((char, index) => char !== a[index]).length;
+// A different ID in three or more places is a new ID, not a small correction.
+const NEW_ID_CHARACTERS = 3;
 
 // A full ID said from scratch replaces the old one. Otherwise the text adds to it or corrects it.
 function applyId(current: string, text: string): string {
@@ -89,7 +162,8 @@ function askId(ctx: Ctx, text: string) {
   }
 
   session.trackingId = id;
-  if (id === before) return unclear(ctx, text);
+  session.idConfirmed = false;
+  if (id === before) return fallback(ctx, text);
 
   deps.log("info", `Understood so far: ${[...id.padEnd(ID_LENGTH, "_")].join(" ")}`);
   if (isValid(id)) {
@@ -103,18 +177,21 @@ async function confirmId(ctx: Ctx, text: string) {
   const { session, deps, say } = ctx;
   if (isYes(text)) {
     deps.log("good", `Caller confirmed tracking ID ${session.trackingId}`);
+    session.idConfirmed = true;
     session.stage = "OFFER_SLOTS";
     return offerSlots(ctx);
   }
 
   const next = applyId(session.trackingId, text);
   if (next !== session.trackingId && isValid(next)) {
-    deps.log("warn", `Corrected tracking ID to ${next}`);
+    const different = changedCharacters(session.trackingId, next) >= NEW_ID_CHARACTERS;
+    deps.log("warn", `${different ? "Caller gave a different tracking ID" : "Corrected tracking ID"}: ${next}`);
     session.trackingId = next;
-    return say(`Sorry about that. Is it ${spell(next)}?`);
+    session.idConfirmed = false;
+    return say(different ? `Got it, a different ID. ${spell(next)}. Is that correct?` : `Sorry about that. Is it ${spell(next)}?`);
   }
   if (isNo(text)) return say("Sorry. Which character is wrong? Or say the whole ID again.");
-  await unclear(ctx, text);
+  await fallback(ctx, text);
 }
 
 async function offerSlots(ctx: Ctx) {
@@ -141,7 +218,7 @@ async function chooseSlot(ctx: Ctx, text: string) {
   }
 
   const slot = pickSlot(session.slots, text);
-  if (!slot) return unclear(ctx, text);
+  if (!slot) return fallback(ctx, text);
 
   deps.log("info", `Caller chose ${slot.label}`);
   session.chosenSlotId = slot.id;
@@ -169,11 +246,13 @@ async function confirmSlot(ctx: Ctx, text: string) {
     session.chosenSlotId = undefined;
     return say(`No problem. ${slotPrompt(session)}`);
   }
-  await unclear(ctx, text);
+  await fallback(ctx, text);
 }
 
 async function book(ctx: Ctx, slot: Slot) {
   const { session, deps, say } = ctx;
+  // The flow cannot reach this without a confirmed ID. This makes sure of it.
+  if (!session.idConfirmed) throw new Error("the tracking ID was not confirmed by the caller");
   session.stage = "BOOKING";
   session.booking = startBooking(session.trackingId, slot.id, session.confirmedSlotId);
 
@@ -202,20 +281,86 @@ async function retryBooking(ctx: Ctx, text: string) {
     session.stage = "DONE";
     return say("Understood. Please call back shortly to check the booking. Goodbye.");
   }
-  await unclear(ctx, text);
+  await fallback(ctx, text);
 }
 
-// Falls back to the LLM for side questions, then always repeats what we need from the caller.
-async function unclear({ session, deps, say }: Ctx, text: string) {
-  let answer = "Sorry, I did not catch that.";
-  if (deps.llm) {
-    try {
-      answer = await deps.llm(LLM_SYSTEM, `The caller said: "${text}"`);
-    } catch (error) {
-      deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
-    }
+// The caller said something the current step cannot use. Questions about the agent and requests like
+// "hold on" are answered from fixed rules. Anything else goes to the LLM, which can also say it was not meant for us.
+async function fallback(ctx: Ctx, text: string) {
+  const { session, deps, say } = ctx;
+
+  const intent = matchIntent(text);
+  if (intent) return answerIntent(ctx, intent);
+
+  // A bare yes or no with nothing to confirm is not something to ask the LLM about.
+  if ((isYes(text) || isNo(text)) && text.trim().split(/\s+/).length <= 3) {
+    return say(`Sorry, I am not sure what you are answering. ${reprompt(session)}`);
   }
-  say(`${answer} ${reprompt(session)}`);
+
+  const answer = await askLlm(ctx);
+  if (answer === IGNORE) return deps.log("info", `Ignored "${text}", it did not sound like it was meant for the agent`);
+  if (answer) return say(`${answer} ${reprompt(session)}`);
+
+  if (isQuestion(text)) return say(`I can only help with rescheduling your delivery. ${reprompt(session)}`);
+  say(`Sorry, I did not catch that. ${reprompt(session)}`);
+}
+
+function answerIntent({ session, deps, say }: Ctx, intent: Intent) {
+  deps.log("info", `Caller asked for: ${intent.name}`);
+  switch (intent.name) {
+    case "goodbye":
+      session.stage = "DONE";
+      return say("Okay, goodbye.");
+    case "wait":
+      session.holdUntil = Date.now() + HOLD_MS;
+      return say("Of course, take your time. I will be here.");
+    case "repeat":
+      return say(`Sure. ${session.lastSaid.replace(/^(Sure\. )+/, "")}`);
+    default:
+      return say(`${intent.reply} ${reprompt(session)}`.trim());
+  }
+}
+
+function systemPrompt(session: Session): string {
+  const facts = session.trackingId ? `The tracking ID heard so far is ${session.trackingId}.` : "No tracking ID has been heard yet.";
+  return [
+    "You are a polite phone agent for a courier service. Your only job is to reschedule one delivery:",
+    "collect the tracking ID (two letters and six digits), confirm it, offer new delivery slots, and book one after the caller says yes.",
+    `Right now the call is at this point: ${reprompt(session)}`,
+    facts,
+    "Reply in one or two short plain sentences. No lists, no markdown, no emojis, and do not ask a question, because the system adds the next question itself.",
+    "You may explain what you do and how this call works.",
+    "You cannot look up parcel status, prices, policies or delivery times, and you must never guess them. Say you cannot help with that and that you can only reschedule.",
+    `If the caller is clearly talking to someone else, or it is background chatter, reply with exactly ${IGNORE}.`,
+  ].join(" ");
+}
+
+// Returns the cleaned answer, IGNORE, or nothing if the LLM is missing or fails.
+async function askLlm({ session, deps, say }: Ctx): Promise<string | undefined> {
+  if (!deps.llm) return;
+  const options: Options = { ...deps.timing, onWait: () => say("One moment.") };
+  try {
+    const turns = session.history.map((turn) => ({ role: turn.role, content: turn.text }));
+    const raw = await withWaitNotice(options, () => deps.llm!(systemPrompt(session), turns));
+    return cleanAnswer(raw);
+  } catch (error) {
+    deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
+  }
+}
+
+// Spoken answers are plain and short, whatever the model returned.
+function cleanAnswer(raw: string): string | undefined {
+  const text = raw.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
+  if (!text) return;
+  if (text.toUpperCase().startsWith(IGNORE)) return IGNORE;
+  // The system asks the next question itself, so any sentence in the answer that asks something is dropped.
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b/i.test(sentence))
+    .slice(0, 2)
+    .join(" ");
+  if (!sentences) return;
+  return sentences.length > MAX_ANSWER_CHARS ? sentences.slice(0, MAX_ANSWER_CHARS).replace(/\s+\S*$/, "") + "." : sentences;
 }
 
 function reprompt(session: Session): string {

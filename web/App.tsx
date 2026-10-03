@@ -89,7 +89,7 @@ export function App() {
             {active ? "End call" : call.canResume ? "Resume call" : "Start call"}
           </button>
 
-          <TrackingTiles id={call.trackingId} />
+          <TrackingTiles id={call.trackingId} confirmed={call.idConfirmed} />
 
           <dl className="mt-1 flex w-full gap-3">
             <div className="flex-1 rounded-2xl bg-tile px-3 py-2.5">

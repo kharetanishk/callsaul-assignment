@@ -5,24 +5,36 @@ import type { Llm } from "./llm";
 import { log, type Level, type Scope } from "./logger";
 import type { ServerMessage } from "./protocol";
 import { getSession } from "./session";
-import { isInterruption } from "./speech";
+import { isInterruption, isRelevant } from "./speech";
 import { createStt } from "./stt";
-import { isValid, updateId } from "./trackingId";
+import { isValid, looksLikeIdStart, updateId } from "./trackingId";
 import { synthesize, TTS_SAMPLE_RATE } from "./tts";
 
 export type Socket = { send: (data: string | Uint8Array) => void };
 export type Call = { sendAudio: (audio: Uint8Array) => void; end: () => void };
-type Shared = { backend: Backend; llm?: Llm; deepgramKey: string; silenceMs?: number };
+type Shared = { backend: Backend; llm?: Llm; deepgramKey: string; silenceMs?: number; recoverMs?: number; idPauseMs?: number };
 type Services = { createStt: typeof createStt; synthesize: typeof synthesize };
 
 // Callers pause between characters, so an unfinished ID waits a little longer for the rest.
-const ID_PAUSE_MS = 900;
+const ID_PAUSE_MS = 1600;
+// Chunks of speech are collected until the caller pauses this long. Constant background talk gives no pause of its own.
+const CHUNK_PAUSE_MS = 700;
+// A chunk of an unfinished ID that was not followed by a pause: the caller is probably still reading it out.
+const ID_CHUNK_WAIT_MS = 2400;
+// While the caller is still producing words, an unfinished ID is not answered yet. This is the longest it waits in total.
+const STILL_TALKING_MS = 1200;
+const MAX_ID_WAIT_MS = 7000;
+const STILL_TALKING_RECHECK_MS = 400;
 const SPEECH_TIMEOUT_MS = 15_000;
 // Extra time after the computed end of speech, to cover network and playback delay.
 const PLAYBACK_MARGIN_MS = 300;
 // If the caller says nothing this long after the agent finishes, the agent says it cannot hear them.
 const SILENCE_MS = 8000;
 const MAX_REMINDERS = 3;
+// After the caller cuts in, how long to wait for something useful before taking the floor back.
+const RECOVER_MS = 3500;
+// After this many chunks of talk that is not about the call in a row, the agent says it is hearing other voices.
+const BACKGROUND_CHUNKS_BEFORE_NOTICE = 3;
 
 const BACKEND_CALL_NAMES: Record<CallKind, string> = { slots: "Slot lookup", book: "Booking request", status: "Status check" };
 const BACKEND_BEHAVIOURS: Record<Mode, string> = {
@@ -36,13 +48,21 @@ const BACKEND_BEHAVIOURS: Record<Mode, string> = {
 export function startCall(
   socket: Socket,
   sessionId: string,
-  { backend, llm, deepgramKey, silenceMs = SILENCE_MS }: Shared,
+  { backend, llm, deepgramKey, silenceMs = SILENCE_MS, recoverMs = RECOVER_MS, idPauseMs = ID_PAUSE_MS }: Shared,
   services: Services = { createStt, synthesize },
 ): Call {
   const session = getSession(sessionId);
 
   let heardText = "";
+  let heardConfidence = 1;
   let heardAt = 0;
+  let lastCallerWordAt = 0;
+  let waitingForRestOfId = false;
+  // True from the moment the agent stops because of the caller until the caller's answer arrives.
+  let cutIn = false;
+  let backgroundChunks = 0;
+  let backgroundNoticeGiven = false;
+  let recoverTimer: ReturnType<typeof setTimeout> | undefined;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let speechQueue: Promise<void> = Promise.resolve();
   let sentencesQueued = 0;
@@ -61,7 +81,7 @@ export function startCall(
   const isSpeaking = () => sentencesQueued > 0 || Date.now() < speakingUntil;
 
   const sendState = () =>
-    send({ type: "state", stage: session.stage, trackingId: session.trackingId, bookings: backend.bookings.size });
+    send({ type: "state", stage: session.stage, trackingId: session.trackingId, idConfirmed: session.idConfirmed, bookings: backend.bookings.size });
 
   const deps: Deps = {
     backend,
@@ -136,7 +156,8 @@ export function startCall(
   function waitForCaller() {
     clearTimeout(silenceTimer);
     if (reminders >= MAX_REMINDERS || session.stage === "DONE") return;
-    silenceTimer = setTimeout(remind, silenceMs + Math.max(0, speakingUntil - Date.now()));
+    const patience = Math.max(0, (session.holdUntil ?? 0) - Date.now());
+    silenceTimer = setTimeout(remind, silenceMs + Math.max(0, speakingUntil - Date.now()) + patience);
   }
 
   function remind() {
@@ -152,29 +173,69 @@ export function startCall(
     interrupted = new AbortController();
     sentencesQueued = 0;
     speakingUntil = 0;
+    cutIn = true;
+    clearTimeout(recoverTimer);
+    recoverTimer = setTimeout(recover, recoverMs);
     send({ type: "stop_audio" });
     tell("info", "Caller spoke over the agent, so the agent stopped talking", "BARGE-IN");
   }
 
-  function onInterim(text: string) {
-    clearTimeout(silenceTimer);
-    send({ type: "interim", text });
-    if (isSpeaking() && isInterruption(text, session.lastSaid)) interrupt();
+  // The caller cut in but nothing useful followed, so it was probably noise. Take the floor back and repeat.
+  function recover() {
+    if (!cutIn || isSpeaking() || session.busy || heardText) return;
+    cutIn = false;
+    tell("info", "Nothing useful followed the interruption, so the agent carried on", "BARGE-IN");
+    speak(`Sorry, as I was saying. ${session.lastSaid}`, true);
   }
 
-  function onHeard(text: string) {
-    note("HEARD", `"${text}"`);
+  function onInterim(text: string, confidence = 1) {
+    const relevant = isRelevant(text, session.stage);
+    // Only speech about this call counts as the caller answering. Background talk must not keep the watchdog quiet.
+    if (relevant) {
+      clearTimeout(silenceTimer);
+      lastCallerWordAt = Date.now();
+      send({ type: "interim", text });
+    }
+    if (isSpeaking() && isInterruption(text, session.lastSaid, session.stage, confidence)) interrupt();
+  }
+
+  // One finished chunk of what the recognizer heard. Chunks about the call are collected and answered together.
+  function onHeard(text: string, confidence = 1, endOfSpeech = true) {
+    note("HEARD", `"${text}"${confidence < 1 ? ` (confidence ${confidence.toFixed(2)})` : ""}`);
+
+    if (isSpeaking()) {
+      if (!isInterruption(text, session.lastSaid, session.stage, confidence)) {
+        return tell("info", `Ignored "${text}", it was noise, an echo or talk that is not about this call`, "LISTEN");
+      }
+      interrupt();
+    } else if (!isRelevant(text, session.stage)) {
+      // Talk that has nothing to do with the call, like people in the background, is dropped here, so it never
+      // piles up around the caller's own words.
+      tell("info", `Ignored "${text}", it sounded like talk between other people`, "LISTEN");
+      if (++backgroundChunks >= BACKGROUND_CHUNKS_BEFORE_NOTICE && !backgroundNoticeGiven && !heardText) {
+        backgroundNoticeGiven = true;
+        speak("I can hear other people talking nearby. If you can, please move away from them or speak closer to the microphone.", true);
+        return;
+      }
+      return recoverNow();
+    }
+    backgroundChunks = 0;
+
     reminders = 0;
     clearTimeout(silenceTimer);
-    if (isSpeaking()) {
-      if (!isInterruption(text, session.lastSaid)) return tell("info", `Ignored "${text}", it was only noise or an echo`, "LISTEN");
-      interrupt();
-    }
     heardText = `${heardText} ${text}`.trim();
+    heardConfidence = Math.min(heardConfidence, confidence);
     heardAt = Date.now();
-    const idUnfinished = session.stage === "ASK_ID" && !isValid(updateId(session.trackingId, heardText));
+    // Only wait for more of the ID if this sounded like part of one. Other talk is dealt with straight away.
+    const withThis = updateId(session.trackingId, heardText);
+    const idUnfinished =
+      session.stage === "ASK_ID"
+        ? withThis !== session.trackingId && !isValid(withThis)
+        : looksLikeIdStart(heardText) && !isValid(updateId("", heardText));
     clearTimeout(holdTimer);
-    holdTimer = setTimeout(deliver, idUnfinished ? ID_PAUSE_MS : 0);
+    waitingForRestOfId = idUnfinished;
+    const wait = idUnfinished ? (endOfSpeech ? idPauseMs : ID_CHUNK_WAIT_MS) : endOfSpeech ? 0 : CHUNK_PAUSE_MS;
+    holdTimer = setTimeout(deliver, wait);
   }
 
   // Heard something, but too unclear to trust. Ask again instead of staying silent.
@@ -184,9 +245,19 @@ export function startCall(
   }
 
   async function deliver() {
+    // The recognizer can end a chunk at a comma while the caller carries on. If words are still arriving, wait.
+    const stillTalking = Date.now() - lastCallerWordAt < STILL_TALKING_MS;
+    if (waitingForRestOfId && stillTalking && Date.now() - heardAt < MAX_ID_WAIT_MS) {
+      holdTimer = setTimeout(deliver, STILL_TALKING_RECHECK_MS);
+      return;
+    }
     const text = heardText;
     heardText = "";
+    heardConfidence = 1;
+    if (!text) return;
 
+    cutIn = false;
+    clearTimeout(recoverTimer);
     send({ type: "user", text });
     try {
       await handleTurn(session, text, deps);
@@ -195,6 +266,12 @@ export function startCall(
       speak("Sorry, something went wrong on my side. Could you say that again?");
     }
     sendState();
+  }
+
+  // If the caller had cut in and then turned out to be background talk, pick up straight away.
+  function recoverNow() {
+    clearTimeout(recoverTimer);
+    recover();
   }
 
   const stt = services.createStt(deepgramKey, {
@@ -233,6 +310,7 @@ export function startCall(
       stopListening();
       clearTimeout(silenceTimer);
       clearTimeout(holdTimer);
+      clearTimeout(recoverTimer);
       stt.close();
     },
   };

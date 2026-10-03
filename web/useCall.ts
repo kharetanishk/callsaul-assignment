@@ -17,7 +17,7 @@ export type TimelineItem = {
   technical?: boolean;
 };
 
-export type Summary = { stage?: Stage; trackingId: string; bookings: number; responseMs?: number };
+export type Summary = { stage?: Stage; trackingId: string; idConfirmed: boolean; bookings: number; responseMs?: number };
 type ActiveCall = {
   socket?: WebSocket;
   mic: Mic;
@@ -29,7 +29,7 @@ type ActiveCall = {
   lost: boolean;
 };
 
-const EMPTY_SUMMARY: Summary = { trackingId: "", bookings: 0 };
+const EMPTY_SUMMARY: Summary = { trackingId: "", idConfirmed: false, bookings: 0 };
 // The agent often pauses briefly between sentences. It only counts as finished speaking after this long.
 const SPEAKING_GAP_MS = 350;
 // The browser remembers the call so a dropped or reloaded page can pick it up again.
@@ -91,7 +91,7 @@ export function useCall() {
         case "interim":
           return setInterim(message.text);
         case "state":
-          setSummary((old) => ({ ...old, stage: message.stage, trackingId: message.trackingId, bookings: message.bookings }));
+          setSummary((old) => ({ ...old, stage: message.stage, trackingId: message.trackingId, idConfirmed: message.idConfirmed, bookings: message.bookings }));
           // A finished call cannot be resumed, so the next one starts fresh.
           if (message.stage === "DONE") saveSession(undefined);
           return setPhase((current) => (current === "connecting" || current === "reconnecting" ? "listening" : current));
@@ -181,6 +181,7 @@ export function useCall() {
       mic = await startMic({
         onAudio: (audio) => call.current?.socket?.readyState === WebSocket.OPEN && call.current.socket.send(audio),
         onSpeech: () => call.current?.player.duck(),
+        agentLevel: () => call.current?.player.level() ?? 0,
       });
     } catch {
       setPhase("idle");

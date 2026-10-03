@@ -3,7 +3,7 @@ import { startCall, type Call } from "./call";
 import type { ClientMessage } from "./protocol";
 import { discardSession, releaseSession } from "./session";
 import { createBackend, type Mode } from "./fakeBackend";
-import { createLlm } from "./llm";
+import { createLlm, modelsFromEnv } from "./llm";
 import { banner, log } from "./logger";
 
 type SocketData = { sessionId: string; call?: Call };
@@ -15,8 +15,8 @@ const port = Number(process.env.PORT ?? 3000);
 const seed = process.env.FAKE_SEED ? Number(process.env.FAKE_SEED) : undefined;
 const backend = createBackend({ seed });
 const openRouterKey = process.env.OPENROUTER_API_KEY;
-const llmModel = process.env.OPENROUTER_MODEL ?? "google/gemma-4-26b-a4b-it:free";
-const llm = openRouterKey ? createLlm(openRouterKey, llmModel) : undefined;
+const llmModels = modelsFromEnv(process.env.OPENROUTER_MODEL);
+const llm = openRouterKey ? createLlm(openRouterKey, llmModels) : undefined;
 
 const MODES: Mode[] = ["ok", "slow", "fail", "lostack", "hang"];
 
@@ -79,6 +79,6 @@ banner("Reschedule voice agent", [
   ["Open", `http://localhost:${port}`],
   ["Listening", "Deepgram nova-3"],
   ["Speaking", process.env.TTS_PROVIDER === "elevenlabs" ? "ElevenLabs (falls back to Deepgram)" : "Deepgram aura-2"],
-  ["Brain LLM", llm ? llmModel : "off (set OPENROUTER_API_KEY), fixed replies only"],
+  ["Brain LLM", llm ? llmModels.join(", then ") : "off (set OPENROUTER_API_KEY), fixed replies only"],
   ["Booking system", `fake courier backend, ${seed === undefined ? "random behaviour" : `seed ${seed}`}`],
 ]);

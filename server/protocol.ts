@@ -9,7 +9,7 @@ export type ServerMessage =
   | { type: "interim"; text: string }
   | { type: "log"; kind: LogKind; text: string }
   | { type: "metric"; name: "voice" | "response"; ms: number }
-  | { type: "state"; stage: Stage; trackingId: string; bookings: number }
+  | { type: "state"; stage: Stage; trackingId: string; idConfirmed: boolean; bookings: number }
   | { type: "backend"; mode: Mode; text: string }
   | { type: "stop_audio" }
   | { type: "speak_fallback"; text: string };

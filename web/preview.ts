@@ -1,7 +1,10 @@
 // Sample content shown when the page is opened with ?phase=speaking (or another phase), so the design can be seen without a call.
 import type { Summary, TimelineItem } from "./useCall";
 
-export const PREVIEW_SUMMARY: Summary = { stage: "CONFIRM_SLOT", trackingId: "BD418207", bookings: 0, responseMs: 1100 };
+// ?id=pending previews an ID the caller has not said yes to yet.
+const pending = new URLSearchParams(location.search).get("id") === "pending";
+
+export const PREVIEW_SUMMARY: Summary = { stage: pending ? "CONFIRM_ID" : "CONFIRM_SLOT", trackingId: "BD418207", idConfirmed: !pending, bookings: 0, responseMs: 1100 };
 
 export const PREVIEW_INTERIM = "yes, book that one";
 

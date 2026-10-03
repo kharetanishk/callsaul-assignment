@@ -50,6 +50,45 @@ export function hasValidShape(id: string): boolean {
   return /^([A-Z]{0,2}|[A-Z]{2}\d{0,6})$/.test(id);
 }
 
+// True if the text sounds like someone reading out an ID, as opposed to talking about something else.
+export function hasIdSpeech(text: string): boolean {
+  return idSpeechIn(simplify(text)) !== "";
+}
+
+// The ID characters in the text, whatever is said around them. Empty if it does not sound like an ID.
+export function idCharsIn(text: string): string {
+  const speech = idSpeechIn(simplify(text));
+  return speech ? fit(toChars(speech, true)) : "";
+}
+
+// Is this the start of someone reading out an ID? A letter, or a few characters, is enough. A single digit is not,
+// so "the second one" is an answer and not an ID.
+export function looksLikeIdStart(text: string): boolean {
+  const chars = idCharsIn(text);
+  return chars.length >= MIN_START_CHARS || /[A-Z]/.test(chars);
+}
+const MIN_START_CHARS = 3;
+
+// The part of the text that is ID speech. If the whole text is mostly ID words, all of it. Otherwise only a long
+// run of ID words inside it, which is how a caller's digits show up when someone else is talking over them.
+function idSpeechIn(clean: string): string {
+  if (looksLikeAnId(clean) && toChars(clean, true).length > 0) return clean;
+  return longestIdRun(clean);
+}
+
+const MIN_RUN_WORDS = 4;
+
+function longestIdRun(clean: string): string {
+  let best: string[] = [];
+  let run: string[] = [];
+  for (const word of clean.split(/\s+/).filter(Boolean)) {
+    if (WORDS.has(word) || /^\d+$/.test(word)) run.push(word);
+    else if (!(NEUTRAL_WORDS.has(word) && run.length)) run = [];
+    if (run.length > best.length) best = [...run];
+  }
+  return best.length >= MIN_RUN_WORDS ? best.join(" ") : "";
+}
+
 // Adds what the caller just said to the ID, or applies a correction if they made one.
 export function updateId(current: string, text: string): string {
   const clean = simplify(text);
@@ -69,7 +108,10 @@ export function updateId(current: string, text: string): string {
     return replaceAt(current, current.indexOf(wrong), right);
   }
 
-  return fit([...current, ...toChars(clean)]);
+  // Anything else is new characters. Talk that is not about an ID, like people in the background, adds nothing.
+  const speech = idSpeechIn(clean);
+  if (!speech) return current;
+  return fit([...current, ...toChars(speech, true)]);
 }
 
 function simplify(text: string): string {
@@ -81,15 +123,39 @@ function simplify(text: string): string {
     .replace(/[^a-z0-9 ]/g, " ");
 }
 
+// Words that can sit around an ID without being part of it.
+const NEUTRAL_WORDS = new Set([
+  "as", "in", "for", "double", "triple", "and", "then", "is", "its", "it", "thats", "my", "id", "tracking",
+  "number", "the", "um", "uh", "okay", "ok", "so", "yes", "yeah", "no", "its", "said", "i",
+]);
+
+const isIdWord = (word: string) => WORDS.has(word) || /^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word);
+
+// Someone reading out an ID says mostly ID words. Background chatter has many other words.
+function looksLikeAnId(clean: string): boolean {
+  const words = clean.split(/\s+/).filter(Boolean);
+  const idWords = words.filter(isIdWord).length;
+  const others = words.filter((word) => !isIdWord(word) && !NEUTRAL_WORDS.has(word)).length;
+  return idWords > 0 && others <= idWords;
+}
+
 // Ignores words that are not part of an ID. A lone letter, digits, or "bd418" style words count.
-function toChars(text: string): string[] {
+// When strict, a lone letter only counts next to another ID word, so the "a" in "a few minutes" is skipped.
+function toChars(text: string, strict = false): string[] {
   const out: string[] = [];
+  const words = text.split(/\s+/).filter(Boolean);
   let repeat = 1;
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const [index, word] of words.entries()) {
     if (word === "double") repeat = 2;
     else if (word === "triple") repeat = 3;
     else {
-      const found = WORDS.get(word) ?? (/^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word) ? word.toUpperCase() : "");
+      const alone = /^[a-z]$/.test(word) && !WORDS.has(word);
+      const next = words[index + 1];
+      const before = words[index - 1];
+      // "the second one" is an answer to "which slot", so the "one" after an ordinal is not a digit.
+      const answeringWhich = before !== undefined && ORDINALS.includes(before) && /^(one|[1-9])$/.test(word);
+      const skip = answeringWhich || (strict && alone && !(next && isIdWord(next)) && !(before && isIdWord(before)));
+      const found = skip ? "" : (WORDS.get(word) ?? (/^([a-z0-9]|\d+|[a-z]{2}\d+)$/.test(word) ? word.toUpperCase() : ""));
       for (const c of found) out.push(...Array<string>(repeat).fill(c));
       repeat = 1;
     }

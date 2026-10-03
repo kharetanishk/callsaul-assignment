@@ -6,8 +6,10 @@ const PLAYBACK_RATE = 24000;
 const FRAME_SAMPLES = 2048;
 // Small delay before the first chunk so playback does not start in the past.
 const PLAYBACK_LEAD_SECONDS = 0.05;
-// How long the agent stays quiet after a possible interruption, if no words follow.
-const DUCK_MS = 1200;
+// When the caller might be cutting in, the agent dips to this volume instead of going silent.
+const DUCK_VOLUME = 0.25;
+// How long it stays dipped if no words follow.
+const DUCK_MS = 900;
 // Time constant for fading the volume, so cutting it does not click.
 const FADE_SECONDS = 0.015;
 // Speech is quiet on a 0 to 1 scale, so loudness is boosted to use more of the range.
@@ -47,23 +49,28 @@ export type Player = {
   play: (pcm16: ArrayBuffer) => void;
   // How loud the agent is right now, from 0 to 1.
   level: () => number;
-  // Mutes the agent for a moment. The volume comes back unless stop() is called first.
+  // Dips the agent's volume for a moment. It comes back unless stop() is called first.
   duck: () => void;
   // Cuts the agent off and throws away everything still queued.
   stop: () => void;
 };
 type PlayerOptions = { onPlaying: () => void; onIdle: () => void };
-type MicHandlers = { onAudio: (pcm16: ArrayBuffer) => void; onSpeech: () => void };
+type MicHandlers = {
+  onAudio: (pcm16: ArrayBuffer) => void;
+  onSpeech: () => void;
+  // How loud the agent is right now, so its own voice leaking into the mic is not mistaken for the caller.
+  agentLevel?: () => number;
+};
 
 // Asks for the microphone. Sends 16 kHz PCM16 audio to onAudio, and calls onSpeech when the caller starts talking.
-export async function startMic({ onAudio, onSpeech }: MicHandlers): Promise<Mic> {
+export async function startMic({ onAudio, onSpeech, agentLevel }: MicHandlers): Promise<Mic> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
   });
   const context = new AudioContext();
   await context.audioWorklet.addModule(URL.createObjectURL(new Blob([MIC_WORKLET], { type: "text/javascript" })));
 
-  const detectSpeech = createSpeechDetector(onSpeech);
+  const detectSpeech = createSpeechDetector(onSpeech, agentLevel);
   const worklet = new AudioWorkletNode(context, "mic");
   worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
     detectSpeech(event.data);
@@ -125,7 +132,7 @@ export function createPlayer(context: AudioContext, { onPlaying, onIdle }: Playe
 
     duck() {
       if (playing.size === 0) return;
-      setVolume(0);
+      setVolume(DUCK_VOLUME);
       clearTimeout(duckTimer);
       duckTimer = setTimeout(() => setVolume(1), DUCK_MS);
     },

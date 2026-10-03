@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline/promises";
 import { greet, handleTurn } from "./brain";
 import { createBackend } from "./fakeBackend";
-import { createLlm } from "./llm";
+import { createLlm, modelsFromEnv } from "./llm";
 import { newSession } from "./session";
 
 const dim = (text: string) => `\x1b[2m${text}\x1b[0m`;
@@ -12,7 +12,7 @@ const deps = {
   backend: createBackend({ seed: process.env.FAKE_SEED ? Number(process.env.FAKE_SEED) : undefined }),
   say: (text: string) => console.log(`Agent: ${text}`),
   log: (kind: string, text: string) => console.log(dim(`  [${kind}] ${text}`)),
-  llm: apiKey ? createLlm(apiKey, process.env.OPENROUTER_MODEL ?? "google/gemma-4-26b-a4b-it:free") : undefined,
+  llm: apiKey ? createLlm(apiKey, modelsFromEnv(process.env.OPENROUTER_MODEL)) : undefined,
 };
 
 const session = newSession("text-chat");
