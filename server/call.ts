@@ -1,5 +1,5 @@
 // One phone call: caller audio in, agent speech out.
-import { greet, handleTurn, isMeantForAgent, sayGoodbye, type Deps } from "./brain";
+import { greet, handleTurn, sayGoodbye, type Deps } from "./brain";
 import type { Backend, CallKind, Mode } from "./fakeBackend";
 import type { Llm } from "./llm";
 import { log, type Level, type Scope } from "./logger";
@@ -8,11 +8,19 @@ import { getSession } from "./session";
 import { isInterruption, isRelevant, realWords } from "./speech";
 import { createStt } from "./stt";
 import { isValid, looksLikeIdStart, updateId } from "./trackingId";
-import { synthesize, TTS_SAMPLE_RATE } from "./tts";
+import { synthesize, TTS_SAMPLE_RATE, type Voice } from "./tts";
 
 export type Socket = { send: (data: string | Uint8Array) => void };
 export type Call = { sendAudio: (audio: Uint8Array) => void; end: () => void };
-type Shared = { backend: Backend; llm?: Llm; deepgramKey: string; silenceMs?: number; recoverMs?: number; idPauseMs?: number };
+type Shared = {
+  backend: Backend;
+  llm?: Llm;
+  voice?: Voice;
+  deepgramKey: string;
+  silenceMs?: number;
+  recoverMs?: number;
+  idPauseMs?: number;
+};
 type Services = { createStt: typeof createStt; synthesize: typeof synthesize };
 
 // Callers pause between characters, so an unfinished ID waits a little longer for the rest.
@@ -36,7 +44,7 @@ const RECOVER_MS = 3500;
 // After this many chunks of talk that is not about the call in a row, the agent says it is hearing other voices.
 const BACKGROUND_CHUNKS_BEFORE_NOTICE = 3;
 // While the agent waits, speech this short and this clear might be the caller even if it matches no rule.
-const MAYBE_CALLER_MAX_WORDS = 12;
+const MAYBE_CALLER_MAX_WORDS = 25;
 const MAYBE_CALLER_MIN_CONFIDENCE = 0.8;
 
 const BACKEND_CALL_NAMES: Record<CallKind, string> = { slots: "Slot lookup", book: "Booking request", status: "Status check" };
@@ -51,13 +59,15 @@ const BACKEND_BEHAVIOURS: Record<Mode, string> = {
 export function startCall(
   socket: Socket,
   sessionId: string,
-  { backend, llm, deepgramKey, silenceMs = SILENCE_MS, recoverMs = RECOVER_MS, idPauseMs = ID_PAUSE_MS }: Shared,
+  { backend, llm, voice, deepgramKey, silenceMs = SILENCE_MS, recoverMs = RECOVER_MS, idPauseMs = ID_PAUSE_MS }: Shared,
   services: Services = { createStt, synthesize },
 ): Call {
   const session = getSession(sessionId);
 
   let heardText = "";
   let heardConfidence = 1;
+  // The words being collected might be background talk, so the brain is allowed to ignore them.
+  let heardUnsure = false;
   let heardAt = 0;
   let lastCallerWordAt = 0;
   let waitingForRestOfId = false;
@@ -153,7 +163,7 @@ export function startCall(
     let bytes = 0;
     try {
       const request = AbortSignal.any([cancelled, AbortSignal.timeout(SPEECH_TIMEOUT_MS)]);
-      for await (const chunk of services.synthesize(text, request)) {
+      for await (const chunk of services.synthesize(text, request, voice)) {
         if (cancelled.aborted) return;
         if (bytes === 0) {
           firstAudioAt = Date.now();
@@ -204,7 +214,8 @@ export function startCall(
   }
 
   function remind() {
-    if (isSpeaking() || session.busy) return waitForCaller();
+    // Words are still being collected or worked out, so the caller is not silent.
+    if (isSpeaking() || session.busy || heardText) return waitForCaller();
     reminders++;
     tell("warn", "The caller said nothing, so the agent asked again", "CALL");
     speak(`Sorry, I cannot hear you. ${lastQuestion}`, true);
@@ -256,15 +267,16 @@ export function startCall(
       // The agent is waiting, so the caller is the most likely speaker. Short, clear speech gets a second opinion
       // before it is dropped. Long or doubtful talk is treated as people in the background.
       const maybeCaller = realWords(text).length <= MAYBE_CALLER_MAX_WORDS && confidence >= MAYBE_CALLER_MIN_CONFIDENCE;
-      if (maybeCaller) return void checkMaybeCaller(text, confidence, endOfSpeech);
-      return ignoreBackground(text);
+      if (!maybeCaller) return ignoreBackground(text);
+      return accept(text, confidence, endOfSpeech, true);
     }
     accept(text, confidence, endOfSpeech);
   }
 
-  async function checkMaybeCaller(text: string, confidence: number, endOfSpeech: boolean) {
-    if (await isMeantForAgent(session, text, deps)) return accept(text, confidence, endOfSpeech);
-    ignoreBackground(text);
+  function noteCallerSpoke() {
+    backgroundChunks = 0;
+    doneChecks = 0;
+    cancelHangUp();
   }
 
   // Talk that has nothing to do with the call is dropped here, so it never piles up around the caller's own words.
@@ -279,13 +291,14 @@ export function startCall(
   }
 
   // Speech the agent will answer.
-  function accept(text: string, confidence: number, endOfSpeech: boolean) {
-    backgroundChunks = 0;
-    doneChecks = 0;
-    cancelHangUp();
+  function accept(text: string, confidence: number, endOfSpeech: boolean, unsure = false) {
+    // Unsure words only count as the caller once the brain decides they were meant for the agent.
+    if (!unsure) noteCallerSpoke();
 
     reminders = 0;
     clearTimeout(silenceTimer);
+    // Once anything clearly for the agent is in the collected words, the whole turn is treated as for the agent.
+    heardUnsure = heardText ? heardUnsure && unsure : unsure;
     heardText = `${heardText} ${text}`.trim();
     heardConfidence = Math.min(heardConfidence, confidence);
     heardAt = Date.now();
@@ -315,15 +328,25 @@ export function startCall(
       return;
     }
     const text = heardText;
+    const unsure = heardUnsure;
     heardText = "";
     heardConfidence = 1;
+    heardUnsure = false;
     if (!text) return;
 
     cutIn = false;
     clearTimeout(recoverTimer);
-    send({ type: "user", text });
+    // An unsure turn only shows up as the caller's words if the brain decides they were meant for the agent.
+    if (!unsure) send({ type: "user", text });
     try {
-      await handleTurn(session, text, deps);
+      const taken = await handleTurn(session, text, deps, unsure);
+      if (!taken) {
+        ignoreBackground(text);
+        waitForCaller();
+      } else if (unsure) {
+        noteCallerSpoke();
+        send({ type: "user", text });
+      }
     } catch (error) {
       tell("bad", `Something went wrong: ${(error as Error).message}`, "CALL");
       speak("Sorry, something went wrong on my side. Could you say that again?");

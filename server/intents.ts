@@ -5,6 +5,8 @@ export type Intent = { name: string; reply?: string };
 
 // Specific requests come first, so "wait, who am I talking to" is a question about the agent and not a request to wait.
 const INTENTS: { name: string; match: RegExp; reply?: string }[] = [
+  { name: "why the ID", match: /\b(why (do you need|should i (tell|give)|are you asking)|(don'?t|do not|won'?t|will not|not going to) (want to )?(tell|give|share)|is (it|this) safe|privacy)\b/i,
+    reply: "I only use the tracking ID to find your delivery and move it to a new slot. I cannot reschedule without it, and I never ask for anything else." },
   { name: "human", match: /\b(human|real person|a person|representative|operator|someone else|customer (service|care|support)|(speak|talk) to (a|someone|somebody))\b/i,
     reply: "I cannot transfer you from here, but I can reschedule your delivery right now." },
   { name: "identity", match: /\b(who are you|who is this|who am i (talking|speaking)|what('?s| is) your name|which company|where are you calling)\b/i,

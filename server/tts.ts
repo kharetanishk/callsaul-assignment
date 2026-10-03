@@ -1,4 +1,6 @@
-// Turns text into speech (24 kHz PCM16). Deepgram is the free default, ElevenLabs is optional.
+// Turns text into speech (24 kHz PCM16). Deepgram is the free voice, ElevenLabs the premium one.
+
+export type Voice = "deepgram" | "elevenlabs";
 
 export const TTS_SAMPLE_RATE = 24000;
 
@@ -46,8 +48,8 @@ async function* wholeSamples(source: AsyncIterable<Uint8Array>) {
 }
 
 // Falls back to Deepgram if ElevenLabs fails before any audio was produced.
-export async function* synthesize(text: string, signal: AbortSignal): AsyncGenerator<Uint8Array> {
-  if (process.env.TTS_PROVIDER === "elevenlabs" && process.env.ELEVENLABS_API_KEY) {
+export async function* synthesize(text: string, signal: AbortSignal, voice: Voice = "deepgram"): AsyncGenerator<Uint8Array> {
+  if (voice === "elevenlabs" && process.env.ELEVENLABS_API_KEY) {
     let started = false;
     try {
       for await (const chunk of wholeSamples(await elevenlabs(text, signal))) {

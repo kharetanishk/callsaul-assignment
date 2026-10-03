@@ -24,7 +24,6 @@ const FILLERS = [
   "Sorry, this is taking a while. Almost there.",
 ];
 
-const IGNORE = "IGNORE";
 // How long the agent waits quietly after the caller says "hold on".
 const HOLD_MS = 30_000;
 const HISTORY_TURNS = 6;
@@ -43,17 +42,25 @@ export function greet(session: Session, deps: Deps) {
   speak(session, deps, "Hi, I can reschedule your delivery. What is your tracking ID?");
 }
 
-export async function handleTurn(session: Session, text: string, deps: Deps): Promise<void> {
+// Handles one thing the caller said. Returns false if it turned out not to be meant for the agent.
+// An unsure turn is speech that might be background talk: it skips the rules and goes to the LLM, which can ignore it.
+export async function handleTurn(session: Session, text: string, deps: Deps, unsure = false): Promise<boolean> {
   const ctx: Ctx = { session, deps, say: (line) => speak(session, deps, line) };
-  if (session.busy) return ctx.say("Still working on it, one moment.");
+  if (session.busy) {
+    ctx.say("Still working on it, one moment.");
+    return true;
+  }
 
   remember(session, "user", text);
   session.busy = true;
-  const turn = route(ctx, text).finally(() => {
+  const turn = (unsure ? fallback(ctx, text, true) : route(ctx, text)).finally(() => {
     session.busy = false;
   });
-  session.turn = turn.catch(() => {});
-  await turn;
+  session.turn = turn.then(() => {}, () => {});
+  const taken = (await turn) !== IGNORED;
+  // Talk that was not for the agent should not shape later answers.
+  if (!taken) session.history.pop();
+  return taken;
 }
 
 function remember(session: Session, role: "user" | "assistant", text: string) {
@@ -130,24 +137,6 @@ export function sayGoodbye({ session, deps, say }: Ctx) {
   deps.log("good", "The call is ending with a goodbye");
   say(booked ? "Thanks for calling, have a great day. Goodbye." : "Okay, thanks for calling. Goodbye.");
   deps.hangUp?.();
-}
-
-// Speech that might be background talk. Rules answer the easy cases. Otherwise the LLM decides whether it was said
-// to the agent. Without an LLM it is treated as not meant for the agent.
-export async function isMeantForAgent(session: Session, text: string, deps: Deps): Promise<boolean> {
-  if (matchIntent(text)) return true;
-  if (!deps.llm) return false;
-  const system =
-    `You are listening on a phone call between a delivery rescheduling agent and a caller. The agent last said: "${session.lastSaid}". ` +
-    "There may also be other people talking near the caller. Decide if the next words were said by the caller to the agent. " +
-    "Reply with exactly YES or NO.";
-  try {
-    const answer = await deps.llm(system, [{ role: "user", content: text }]);
-    return /^\s*yes/i.test(answer);
-  } catch (error) {
-    deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
-    return false;
-  }
 }
 
 // Forgets the ID and everything that depended on it, and goes back to asking for it.
@@ -240,12 +229,7 @@ function askId(ctx: Ctx, text: string) {
 
 async function confirmId(ctx: Ctx, text: string) {
   const { session, deps, say } = ctx;
-  if (isYes(text)) {
-    deps.log("good", `Caller confirmed tracking ID ${session.trackingId}`);
-    session.idConfirmed = true;
-    session.stage = "OFFER_SLOTS";
-    return offerSlots(ctx);
-  }
+  if (isYes(text)) return acceptId(ctx);
 
   const next = applyId(session.trackingId, text);
   if (next !== session.trackingId && isValid(next)) return replaceId(ctx, next);
@@ -255,6 +239,22 @@ async function confirmId(ctx: Ctx, text: string) {
   }
   if (isNo(text)) return say("Sorry. Which part is wrong? You can say, for example, the last two digits are one three, or say the whole ID again.");
   await fallback(ctx, text);
+}
+
+function acceptId(ctx: Ctx) {
+  const { session, deps } = ctx;
+  deps.log("good", `Caller confirmed tracking ID ${session.trackingId}`);
+  session.idConfirmed = true;
+  session.stage = "OFFER_SLOTS";
+  return offerSlots(ctx);
+}
+
+function chooseThis(ctx: Ctx, slot: Slot) {
+  const { session, deps, say } = ctx;
+  deps.log("info", `Caller chose ${slot.label}`);
+  session.chosenSlotId = slot.id;
+  session.stage = "CONFIRM_SLOT";
+  say(`${slot.label}. Shall I book that?`);
 }
 
 async function offerSlots(ctx: Ctx) {
@@ -282,11 +282,7 @@ async function chooseSlot(ctx: Ctx, text: string) {
 
   const slot = pickSlot(session.slots, text);
   if (!slot) return fallback(ctx, text);
-
-  deps.log("info", `Caller chose ${slot.label}`);
-  session.chosenSlotId = slot.id;
-  session.stage = "CONFIRM_SLOT";
-  say(`${slot.label}. Shall I book that?`);
+  chooseThis(ctx, slot);
 }
 
 async function confirmSlot(ctx: Ctx, text: string) {
@@ -299,6 +295,8 @@ async function confirmSlot(ctx: Ctx, text: string) {
     session.chosenSlotId = picked.id;
     return say(`${picked.label}. Shall I book that?`);
   }
+  // "the last one works fine" names the slot that is already chosen. It sounds like a yes but is not a plain one.
+  if (picked && !isYes(text)) return say(`Just to be sure, shall I book ${chosen.label}? Please say yes or no.`);
   if (isYes(text)) {
     session.confirmedSlotId = chosen.id;
     deps.log("good", `Caller confirmed ${chosen.label}`);
@@ -347,25 +345,141 @@ async function retryBooking(ctx: Ctx, text: string) {
   await fallback(ctx, text);
 }
 
-// The caller said something the current step cannot use. Questions about the agent and requests like
-// "hold on" are answered from fixed rules. Anything else goes to the LLM, which can also say it was not meant for us.
-async function fallback(ctx: Ctx, text: string) {
+// The caller said something the rules could not use. Fixed rules answer the common requests. Everything else goes
+// to the LLM, which works out what the caller meant. The code still decides what happens: the LLM can only pick from
+// a few actions, and a booking still needs a plain yes.
+async function fallback(ctx: Ctx, text: string, unsure = false): Promise<void | typeof IGNORED> {
   const { session, deps, say } = ctx;
 
+  // A rule answers a common request. If the same answer was just given, the caller was not satisfied, so the LLM
+  // answers in its own words instead of the agent repeating itself.
   const intent = matchIntent(text);
-  if (intent) return answerIntent(ctx, intent);
+  if (intent) {
+    const sameAgain = intent.reply !== undefined && session.lastSaid.startsWith(intent.reply);
+    const fresh = sameAgain ? await understand(ctx, unsure) : undefined;
+    return fresh ? act(ctx, text, fresh) : answerIntent(ctx, intent);
+  }
 
   // A bare yes or no with nothing to confirm is not something to ask the LLM about.
-  if ((isYes(text) || isNo(text)) && text.trim().split(/\s+/).length <= 3) {
+  if (!unsure && (isYes(text) || isNo(text)) && text.trim().split(/\s+/).length <= 3) {
     return say(`Sorry, I am not sure what you are answering. ${reprompt(session)}`);
   }
 
-  const answer = await askLlm(ctx);
-  if (answer === IGNORE) return deps.log("info", `Ignored "${text}", it did not sound like it was meant for the agent`);
-  if (answer) return say(`${answer} ${reprompt(session)}`);
+  const meaning = await understand(ctx, unsure);
+  if (meaning) return act(ctx, text, meaning);
 
+  // No LLM answer. Unsure speech is let go, anything else gets a fixed reply so the caller is never left in silence.
+  if (unsure) return IGNORED;
   if (isQuestion(text)) return say(`I can only help with rescheduling your delivery. ${reprompt(session)}`);
   say(`Sorry, I did not catch that. ${reprompt(session)}`);
+}
+
+type Meaning =
+  | { kind: "yes" | "no" | "goodbye" | "ignore" }
+  | { kind: "slot"; index: number }
+  | { kind: "say"; text: string };
+
+async function act(ctx: Ctx, text: string, meaning: Meaning): Promise<void | typeof IGNORED> {
+  const { session, deps, say } = ctx;
+  deps.log("info", `The LLM understood: ${meaning.kind === "say" ? "a question or remark" : meaning.kind === "slot" ? `slot ${meaning.index}` : meaning.kind}`);
+  const chosen = session.slots.find((slot) => slot.id === session.chosenSlotId);
+
+  switch (meaning.kind) {
+    case "ignore":
+      deps.log("info", `Ignored "${text}", it was not meant for the agent`);
+      return IGNORED;
+    case "goodbye":
+      return sayGoodbye(ctx);
+    case "slot": {
+      const slot = session.slots[meaning.index - 1];
+      if (slot && (session.stage === "OFFER_SLOTS" || session.stage === "CONFIRM_SLOT")) return chooseThis(ctx, slot);
+      return say(reprompt(session));
+    }
+    case "yes":
+      if (session.stage === "CONFIRM_ID") return acceptId(ctx);
+      // A booking needs a plain yes, so a yes the LLM read into a vague answer is checked first.
+      if (session.stage === "CONFIRM_SLOT" && chosen) return say(`Just to be sure, shall I book ${chosen.label}? Please say yes or no.`);
+      if (session.stage === "DONE") return say("Sure. If you have another parcel to reschedule, tell me its tracking ID.");
+      return say(reprompt(session));
+    case "no":
+      if (session.stage === "CONFIRM_ID") return say("Sorry. Which part is wrong? You can say, for example, the last digit is seven, or say the whole ID again.");
+      if (session.stage === "CONFIRM_SLOT") {
+        session.stage = "OFFER_SLOTS";
+        session.chosenSlotId = undefined;
+        return say(`No problem. ${slotPrompt(session)}`);
+      }
+      if (session.stage === "DONE") return sayGoodbye(ctx);
+      return say(reprompt(session));
+    case "say":
+      return say(`${meaning.text} ${reprompt(session)}`.trim());
+  }
+}
+
+const IGNORED = "ignored" as const;
+
+function systemPrompt(session: Session, unsure: boolean): string {
+  const slots = session.slots.length
+    ? `The slots on offer are: ${session.slots.slice(0, 3).map((slot, i) => `${i + 1}) ${slot.label}`).join(", ")}.`
+    : "";
+  return [
+    "You are the brain of a phone agent for a courier service. Its only job is to reschedule one delivery:",
+    "get the tracking ID (two letters and six digits), confirm it, offer delivery slots, and book one after a clear yes.",
+    `The agent last said: "${session.lastSaid}"`,
+    slots,
+    unsure
+      ? "The caller is in a car and other people may be talking nearby. These words may not be meant for the agent. " +
+        "If they do not answer the agent and do not talk to the agent about the call, they were said to someone else: answer IGNORE."
+      : "",
+    "Read the caller's last words and answer with exactly one line, in one of these forms:",
+    "YES (the caller agrees with or confirms what the agent just asked)",
+    "NO (the caller disagrees or declines)",
+    slots ? "SLOT <number> (the caller picks one of the slots on offer, in their own words)" : "",
+    "GOODBYE (the caller wants to end the call)",
+    "IGNORE (the words were said to someone else, not to the agent)",
+    "SAY <reply> (anything else said to the agent: a question, a worry, a complaint, small talk).",
+    "A SAY reply is one or two short, warm, plain spoken sentences that respond to exactly what the caller said.",
+    "If you cannot know or do what they ask, say so briefly and kindly. If they are reluctant, explain why the agent needs it.",
+    "Do not ask any question and do not ask for the tracking ID, the agent adds its next question itself.",
+    "Never say any letters or digits of the tracking ID, never say something was changed or booked, and never make up parcel status, prices, policies or delivery times.",
+    "Examples:",
+    "Agent asked to confirm the ID, caller: 'yep spot on' -> YES.",
+    "Agent offered slots, caller: 'the later one in the afternoon' -> SLOT with that slot's number.",
+    "Caller: 'what's the weather like' -> SAY I'm afraid I can't check the weather from here.",
+    "Caller: 'this is taking forever' -> SAY Sorry about the wait, we are nearly there.",
+    "Caller: 'did you remember to buy the milk' -> IGNORE.",
+    "Caller: 'can you pass me the water' -> IGNORE.",
+    "Caller: 'I'm done, you can go' -> GOODBYE.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// Asks the LLM what the caller meant. Nothing if there is no LLM or it does not answer in time.
+async function understand({ session, deps, say }: Ctx, unsure: boolean): Promise<Meaning | undefined> {
+  if (!deps.llm) return;
+  const options: Options = { ...deps.timing, onWait: () => say("One moment.") };
+  try {
+    const turns = session.history.map((turn) => ({ role: turn.role, content: turn.text }));
+    const raw = await withWaitNotice(options, () => deps.llm!(systemPrompt(session, unsure), turns));
+    return readMeaning(raw);
+  } catch (error) {
+    deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
+  }
+}
+
+export function readMeaning(raw: string): Meaning | undefined {
+  const line = raw.replace(/[*_`#>"]/g, "").trim();
+  const word = line.split(/\s+/)[0]?.toUpperCase().replace(/[^A-Z]/g, "");
+  if (word === "YES") return { kind: "yes" };
+  if (word === "NO") return { kind: "no" };
+  if (word === "GOODBYE") return { kind: "goodbye" };
+  if (word === "IGNORE") return { kind: "ignore" };
+  if (word === "SLOT") {
+    const index = Number(line.match(/\d/)?.[0]);
+    return index ? { kind: "slot", index } : undefined;
+  }
+  const reply = cleanAnswer(word === "SAY" ? line.replace(/^\S+\s*:?\s*/, "") : line);
+  return reply ? { kind: "say", text: reply } : undefined;
 }
 
 function answerIntent({ session, deps, say }: Ctx, intent: Intent) {
@@ -383,44 +497,15 @@ function answerIntent({ session, deps, say }: Ctx, intent: Intent) {
   }
 }
 
-function systemPrompt(session: Session): string {
-  const facts = session.trackingId ? `The tracking ID heard so far is ${session.trackingId}.` : "No tracking ID has been heard yet.";
-  return [
-    "You are a polite phone agent for a courier service. Your only job is to reschedule one delivery:",
-    "collect the tracking ID (two letters and six digits), confirm it, offer new delivery slots, and book one after the caller says yes.",
-    `Right now the call is at this point: ${reprompt(session)}`,
-    facts,
-    "Reply in one or two short plain sentences. No lists, no markdown, no emojis, and do not ask a question, because the system adds the next question itself.",
-    "You may explain what you do and how this call works.",
-    "Never read out, repeat, guess or change the tracking ID or any letters or digits. The system does that itself.",
-    "You cannot look up parcel status, prices, policies or delivery times, and you must never guess them. Say you cannot help with that and that you can only reschedule.",
-    `If the caller is clearly talking to someone else, or it is background chatter, reply with exactly ${IGNORE}.`,
-  ].join(" ");
-}
-
-// Returns the cleaned answer, IGNORE, or nothing if the LLM is missing or fails.
-async function askLlm({ session, deps, say }: Ctx): Promise<string | undefined> {
-  if (!deps.llm) return;
-  const options: Options = { ...deps.timing, onWait: () => say("One moment.") };
-  try {
-    const turns = session.history.map((turn) => ({ role: turn.role, content: turn.text }));
-    const raw = await withWaitNotice(options, () => deps.llm!(systemPrompt(session), turns));
-    return cleanAnswer(raw);
-  } catch (error) {
-    deps.log("warn", `LLM unavailable: ${(error as Error).message}`);
-  }
-}
-
 // Spoken answers are plain and short, whatever the model returned.
 function cleanAnswer(raw: string): string | undefined {
   const text = raw.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
   if (!text) return;
-  if (text.toUpperCase().startsWith(IGNORE)) return IGNORE;
   // The system asks the next question itself, so any sentence in the answer that asks something is dropped.
   // So is anything that claims to change the ID or the booking, because only the system can do that.
   const sentences = text
     .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !/\?$|\b(please|could you|can you|tracking id)\b|\bas in\b|\d|\b(character|letter|digit|change|changed|update|updated|correct(ed)?|book(ed)?|slot)\b/i.test(sentence))
+    .filter((sentence) => !/\?$|\b(please|could you|can you)\b|\bas in\b|\d|\b(character|letter|digit|change|changed|update|updated|correct(ed)?|book(ed)?|slot)\b/i.test(sentence))
     .slice(0, 2)
     .join(" ");
   if (!sentences) return;
@@ -448,6 +533,8 @@ export function pickSlot(slots: Slot[], text: string): Slot | undefined {
   const t = text.toLowerCase();
   const ordinal = ["first", "second", "third"].findIndex((word) => t.includes(word));
   if (ordinal >= 0) return slots[ordinal];
+  // "the last one" is the last of the three offered.
+  if (/\b(last|final) one\b/.test(t)) return slots[Math.min(slots.length, 3) - 1];
 
   const scored = slots.map((slot) => ({
     slot,

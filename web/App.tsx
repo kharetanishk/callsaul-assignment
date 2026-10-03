@@ -1,10 +1,11 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { AgentOrb } from "./components/AgentOrb";
 import { Stepper } from "./components/Stepper";
 import { StressTest } from "./components/StressTest";
 import { Timeline } from "./components/Timeline";
 import { TrackingTiles } from "./components/TrackingTiles";
-import { useCall, type Phase } from "./useCall";
+import { savedTier, TierSwitch } from "./components/TierSwitch";
+import { useCall, type Phase, type Tier } from "./useCall";
 
 const PHASE_TEXT: Record<Phase, { title: string; caption: string }> = {
   idle: { title: "Ready", caption: "Press start, then say your tracking ID." },
@@ -23,7 +24,8 @@ const RESPONSE_COLOURS = { good: "bg-good", warn: "bg-warn", bad: "bg-bad" };
 const responseLevel = (ms: number) => (ms < SLOW_RESPONSE_MS ? "good" : ms < BAD_RESPONSE_MS ? "warn" : "bad");
 
 export function App() {
-  const call = useCall();
+  const [tier, setTier] = useState<Tier>(savedTier);
+  const call = useCall(tier);
   const active = call.phase !== "idle";
   const text = PHASE_TEXT[call.phase];
   const stage = useRef<HTMLElement>(null);
@@ -59,10 +61,13 @@ export function App() {
         <div className="glass order-last w-full rounded-full px-5 py-2 min-[901px]:order-none min-[901px]:w-auto min-[901px]:min-w-[520px] min-[901px]:flex-1 min-[901px]:max-w-[640px]">
           <Stepper stage={call.stage} />
         </div>
-        <span className={`glass inline-flex items-center gap-2 rounded-full px-3.5 py-[7px] text-[13px] ${active ? "text-ink" : "text-muted"}`}>
-          <span className={`size-2 rounded-full ${call.phase === "reconnecting" ? "animate-live bg-warn" : active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
-          {call.phase === "reconnecting" ? "Reconnecting" : active ? "On a call" : "Not connected"}
-        </span>
+        <div className="flex items-center gap-2.5">
+          <TierSwitch tier={tier} onChange={setTier} locked={active} />
+          <span className={`glass inline-flex items-center gap-2 rounded-full px-3.5 py-[7px] text-[13px] ${active ? "text-ink" : "text-muted"}`}>
+            <span className={`size-2 rounded-full ${call.phase === "reconnecting" ? "animate-live bg-warn" : active ? "animate-live bg-good shadow-[0_0_0_4px_rgba(63,154,98,0.2)]" : "bg-muted"}`} />
+            {call.phase === "reconnecting" ? "Reconnecting" : active ? "On a call" : "Not connected"}
+          </span>
+        </div>
       </header>
 
       <main className="relative z-10 mx-auto grid w-full max-w-[1400px] flex-1 grid-cols-1 gap-5 min-[901px]:min-h-0 min-[901px]:grid-cols-[minmax(360px,5fr)_7fr]">

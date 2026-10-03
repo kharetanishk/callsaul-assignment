@@ -7,6 +7,7 @@ import { createPlayer, startMic, type Mic, type Player } from "./audio";
 import { PREVIEW_INTERIM, PREVIEW_SUMMARY, PREVIEW_TIMELINE } from "./preview";
 
 export type Levels = { agent: () => number; caller: () => number };
+export type Tier = "free" | "premium";
 export type Phase = "idle" | "connecting" | "reconnecting" | "listening" | "thinking" | "speaking";
 
 export type TimelineItem = {
@@ -23,6 +24,8 @@ type ActiveCall = {
   mic: Mic;
   player: Player;
   sessionId: string;
+  // Kept for the whole call, so a reconnect uses the same brain and voice.
+  tier: Tier;
   ended: boolean;
   // Failed connection attempts since the line was last up.
   attempts: number;
@@ -57,7 +60,9 @@ function saveSession(id: string | undefined) {
 // ?phase=speaking shows the page in that state, with sample content and without a call, to preview the design.
 const previewPhase = new URLSearchParams(location.search).get("phase") as Phase | null;
 
-export function useCall() {
+export function useCall(tier: Tier) {
+  const tierRef = useRef(tier);
+  tierRef.current = tier;
   const [phase, setPhase] = useState<Phase>(previewPhase ?? "idle");
   const [summary, setSummary] = useState<Summary>(previewPhase ? PREVIEW_SUMMARY : EMPTY_SUMMARY);
   const [timeline, setTimeline] = useState<TimelineItem[]>(previewPhase ? PREVIEW_TIMELINE : []);
@@ -143,7 +148,7 @@ export function useCall() {
     if (!active || active.ended) return;
 
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${location.host}/ws?session=${active.sessionId}`);
+    const socket = new WebSocket(`${protocol}://${location.host}/ws?session=${active.sessionId}&tier=${active.tier}`);
     socket.binaryType = "arraybuffer";
     active.socket = socket;
 
@@ -218,7 +223,7 @@ export function useCall() {
       },
     });
 
-    call.current = { mic, player, sessionId, ended: false, attempts: 0, lost: false };
+    call.current = { mic, player, sessionId, tier: tierRef.current, ended: false, attempts: 0, lost: false };
     connect();
   }, [addToTimeline, connect]);
 

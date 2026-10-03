@@ -6,7 +6,8 @@ import { createBackend, type Mode } from "./fakeBackend";
 import { createLlm, modelsFromEnv } from "./llm";
 import { banner, log } from "./logger";
 
-type SocketData = { sessionId: string; call?: Call };
+type Tier = "free" | "premium";
+type SocketData = { sessionId: string; tier: Tier; call?: Call };
 
 const deepgramKey = process.env.DEEPGRAM_API_KEY;
 if (!deepgramKey) throw new Error("DEEPGRAM_API_KEY is missing. Copy .env.example to .env and fill it in.");
@@ -15,8 +16,19 @@ const port = Number(process.env.PORT ?? 3000);
 const seed = process.env.FAKE_SEED ? Number(process.env.FAKE_SEED) : undefined;
 const backend = createBackend({ seed });
 const openRouterKey = process.env.OPENROUTER_API_KEY;
-const llmModels = modelsFromEnv(process.env.OPENROUTER_MODEL);
-const llm = openRouterKey ? createLlm(openRouterKey, llmModels) : undefined;
+
+// Free: free OpenRouter models and the Deepgram voice. Premium: paid OpenRouter models and the ElevenLabs voice.
+// Premium needs an OpenRouter key with credit and an ElevenLabs key. Without them only free is offered.
+const freeModels = modelsFromEnv(process.env.OPENROUTER_MODEL);
+const paidModels = (process.env.OPENROUTER_PAID_MODEL ?? "google/gemini-2.5-flash,anthropic/claude-haiku-4.5")
+  .split(",")
+  .map((model) => model.trim())
+  .filter(Boolean);
+const premiumReady = Boolean(openRouterKey && process.env.ELEVENLABS_API_KEY);
+const tiers = {
+  free: { llm: openRouterKey ? createLlm(openRouterKey, freeModels) : undefined, voice: "deepgram" as const },
+  premium: { llm: openRouterKey ? createLlm(openRouterKey, paidModels) : undefined, voice: "elevenlabs" as const },
+};
 
 const MODES: Mode[] = ["ok", "slow", "fail", "lostack", "hang"];
 
@@ -31,7 +43,8 @@ Bun.serve<SocketData>({
 
     if (url.pathname === "/ws") {
       const sessionId = url.searchParams.get("session") ?? crypto.randomUUID();
-      if (server.upgrade(request, { data: { sessionId } })) return;
+      const tier: Tier = url.searchParams.get("tier") === "premium" && premiumReady ? "premium" : "free";
+      if (server.upgrade(request, { data: { sessionId, tier } })) return;
     }
     // Stress test. With ?mode=slow the booking requests behave that way, ?mode=random goes back to normal.
     // Without a mode it just reports the current setting.
@@ -43,6 +56,7 @@ Bun.serve<SocketData>({
       if (mode) log("BACKEND", `Stress test set to: ${backend.forced ?? "random"}`, "warn");
       return Response.json({ mode: backend.forced ?? "random" });
     }
+    if (url.pathname === "/api/tiers") return Response.json({ premium: premiumReady });
     if (url.pathname === "/api/bookings") return Response.json([...backend.bookings.values()]);
 
     return new Response("Not found", { status: 404 });
@@ -51,7 +65,9 @@ Bun.serve<SocketData>({
     open(ws) {
       const { sessionId } = ws.data;
       activeCalls.get(sessionId)?.end();
-      ws.data.call = startCall(ws, sessionId, { backend, llm, deepgramKey });
+      const { tier } = ws.data;
+      log("CALL", `${tier} tier: ${tier === "premium" ? `${paidModels[0]} and the ElevenLabs voice` : "free models and the Deepgram voice"}`, "info", sessionId.slice(0, 4));
+      ws.data.call = startCall(ws, sessionId, { backend, ...tiers[tier], deepgramKey });
       activeCalls.set(sessionId, ws.data.call);
     },
     message(ws, data) {
@@ -78,7 +94,7 @@ Bun.serve<SocketData>({
 banner("Reschedule voice agent", [
   ["Open", `http://localhost:${port}`],
   ["Listening", "Deepgram nova-3"],
-  ["Speaking", process.env.TTS_PROVIDER === "elevenlabs" ? "ElevenLabs (falls back to Deepgram)" : "Deepgram aura-2"],
-  ["Brain LLM", llm ? llmModels.join(", then ") : "off (set OPENROUTER_API_KEY), fixed replies only"],
+  ["Free tier", openRouterKey ? `${freeModels[0]} (+${freeModels.length - 1} backups), Deepgram aura-2 voice` : "fixed replies only (set OPENROUTER_API_KEY), Deepgram aura-2 voice"],
+  ["Premium tier", premiumReady ? `${paidModels.join(", then ")}, ElevenLabs voice` : "off (needs OPENROUTER_API_KEY and ELEVENLABS_API_KEY)"],
   ["Booking system", `fake courier backend, ${seed === undefined ? "random behaviour" : `seed ${seed}`}`],
 ]);

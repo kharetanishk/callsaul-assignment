@@ -17,6 +17,8 @@ const CONTROL_WORDS =
   /\b(yes|yeah|yep|yup|no|nope|nah|not|wrong|correct|right|stop|wait|hold on|hang on|repeat|again|pardon|sorry|actually|cancel|start over|bye|goodbye|thanks|thank you|okay|ok|sure|please|hello|hi|hey|help|huh|confused|understand)\b/i;
 const SLOT_WORDS =
   /\b(first|second|third|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|other|another|different|earlier|later)\b/i;
+// Talk about the delivery itself is meant for the agent, however long it is.
+const DOMAIN_WORDS = /\b(tracking|track|id|parcel|package|delivery|deliver|courier|slot|book|booking|reschedule|reference)\b/i;
 const QUESTION_START = /^(what|who|why|how|when|where|can|could|do|does|is|are|will|would|should|may)\b/i;
 const MIN_QUESTION_WORDS = 3;
 
@@ -56,7 +58,7 @@ export function isEcho(words: string[], agentText: string): boolean {
 export function isRelevant(text: string, stage: Stage): boolean {
   // "wait wait wait" is one word said three times, still a short answer.
   const short = new Set(realWords(text)).size <= MAX_SHORT_ANSWER_WORDS;
-  if ((short && CONTROL_WORDS.test(text)) || isQuestion(text) || wantsNewId(text) || matchIntent(text)) return true;
+  if ((short && CONTROL_WORDS.test(text)) || isQuestion(text) || wantsNewId(text) || matchIntent(text) || DOMAIN_WORDS.test(text)) return true;
   // An ID can be changed at any step, so ID speech always counts.
   if (hasIdSpeech(text)) return true;
   return (stage === "OFFER_SLOTS" || stage === "CONFIRM_SLOT") && SLOT_WORDS.test(text);

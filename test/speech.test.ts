@@ -90,3 +90,8 @@ test("a new ID or a request to change it counts as relevant at every step", () =
 test("a word said over and over is still a short answer", () => {
   expect(isRelevant("wait wait wait wait wait wait wait", "OFFER_SLOTS")).toBe(true);
 });
+
+test("anything about the delivery is for the agent, however long", () => {
+  expect(isRelevant("i don't want to tell you my tracking id what's the weather outside", "ASK_ID")).toBe(true);
+  expect(isRelevant("when exactly will the courier come to my house tomorrow", "OFFER_SLOTS")).toBe(true);
+});

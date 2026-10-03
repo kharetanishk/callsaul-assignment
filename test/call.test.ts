@@ -236,6 +236,7 @@ test("after several chunks of background talk the agent says it can hear other p
     handlers().onFinal(chatter, 0.9);
     await sleep(20);
   }
+  await sleep(200);
   const notices = spoken().filter((text) => text.includes("other people talking nearby"));
   expect(notices.length).toBe(1);
 });
@@ -417,7 +418,7 @@ test("short clear speech that matches no rule is checked with the LLM before it 
 });
 
 test("if the LLM says it was not meant for the agent, it is ignored", async () => {
-  const llm: Llm = async () => "NO";
+  const llm: Llm = async () => "IGNORE";
   const call = setup(undefined, undefined, undefined, undefined, llm);
   await sleep(600);
   call.handlers().onFinal("did you see what happened last night", 0.95, true);

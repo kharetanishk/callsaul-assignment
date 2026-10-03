@@ -483,3 +483,84 @@ test("an LLM answer that claims to change the ID or book something is not spoken
   expect(said.at(-1)).not.toContain("change the second character");
   expect(said.at(-1)).not.toContain("booked");
 });
+
+const answers = (reply: string): Llm => async () => reply;
+
+test("reads the LLM's decision in its different forms", async () => {
+  const { readMeaning } = await import("../server/brain");
+  expect(readMeaning("YES")).toEqual({ kind: "yes" });
+  expect(readMeaning("**No.**")).toEqual({ kind: "no" });
+  expect(readMeaning("SLOT 2")).toEqual({ kind: "slot", index: 2 });
+  expect(readMeaning("IGNORE")).toEqual({ kind: "ignore" });
+  expect(readMeaning("GOODBYE")).toEqual({ kind: "goodbye" });
+  expect(readMeaning("SAY: I only need it to find your delivery.")).toEqual({ kind: "say", text: "I only need it to find your delivery." });
+});
+
+test("a yes the rules miss, like sounds good to me, confirms the ID through the LLM", async () => {
+  const { session, talk } = setup([], answers("YES"));
+  await talk(FULL_ID, "sounds good to me");
+  expect(session.idConfirmed).toBe(true);
+  expect(session.stage).toBe("OFFER_SLOTS");
+});
+
+test("the LLM can pick the slot the caller described in their own words", async () => {
+  const { session, said, talk } = setup();
+  await talk(FULL_ID, "yes");
+  const brainWithSlot = setup([], answers("SLOT 3"));
+  Object.assign(brainWithSlot.session, session);
+  await brainWithSlot.talk("hmm the latest one works better for me");
+  expect(brainWithSlot.session.stage).toBe("CONFIRM_SLOT");
+  expect(brainWithSlot.session.chosenSlotId).toBe(session.slots[2]!.id);
+  expect(said.length).toBeGreaterThan(0);
+});
+
+test("a vague yes is never enough to book: the agent checks with a plain question first", async () => {
+  const { backend, session, said, talk } = setup([], answers("YES"));
+  await talk(FULL_ID, "yes", "the second one", "I suppose that works");
+  expect(backend.bookings.size).toBe(0);
+  expect(session.stage).toBe("CONFIRM_SLOT");
+  expect(said.at(-1)).toContain("Just to be sure");
+  await talk("yes");
+  expect(backend.bookings.size).toBe(1);
+});
+
+test("a reluctant caller gets an honest reason, not a dropped turn", async () => {
+  const { said, talk } = setup([], neverCalled);
+  await talk("why should I tell you my tracking id");
+  expect(said.at(-1)).toContain("only use the tracking ID");
+  await talk("I don't want to tell you my tracking id");
+  expect(said.at(-1)).toContain("only use the tracking ID");
+});
+
+test("the LLM's own answer is spoken, then the agent asks its question again", async () => {
+  const { said, talk } = setup([], answers("SAY It is a bit cloudy where I am, but I cannot check the weather."));
+  await talk("what's the weather outside");
+  expect(said.at(-1)).toContain("cannot check the weather");
+  expect(said.at(-1)).toContain("tracking ID");
+});
+
+test("unsure words the LLM ignores leave no trace in the conversation", async () => {
+  const { session, said } = setup([], answers("IGNORE"));
+  const { handleTurn } = await import("../server/brain");
+  const taken = await handleTurn(session, "did you see the game last night", { backend: createBackend({ normalMs: 1 }), say: (t) => said.push(t), log: () => {}, llm: answers("IGNORE") }, true);
+  expect(taken).toBe(false);
+  expect(session.history.some((turn) => turn.text.includes("game"))).toBe(false);
+  expect(said.length).toBe(0);
+});
+
+test("the last one picks the last slot offered, and naming the chosen slot again is checked, not booked", async () => {
+  const { backend, session, said, talk } = setup([], neverCalled);
+  await talk(FULL_ID, "yes", "the last one");
+  expect(session.chosenSlotId).toBe(session.slots[2]!.id);
+  await talk("the last one works fine");
+  expect(backend.bookings.size).toBe(0);
+  expect(said.at(-1)).toContain("Just to be sure");
+});
+
+test("asked the same thing twice, the agent answers in new words instead of repeating itself", async () => {
+  const { said, talk } = setup([], answers("SAY It is only used to find your parcel, nothing else."));
+  await talk("why should I tell you my tracking id");
+  expect(said.at(-1)).toContain("only use the tracking ID");
+  await talk("but why should I tell you my tracking id");
+  expect(said.at(-1)).toContain("only used to find your parcel");
+});
