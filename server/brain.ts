@@ -118,7 +118,9 @@ async function route(ctx: Ctx, text: string) {
 // The booking is done and the agent asked "anything else?".
 async function afterBooking(ctx: Ctx, text: string) {
   if (isQuestion(text)) return fallback(ctx, text);
-  if (isYes(text)) return ctx.say("Sure. If you have another parcel to reschedule, tell me its tracking ID.");
+  // "yes" to "shall I end the call?" means end it, while "yes" to "anything else?" means there is more.
+  const askedToEnd = /end the call/i.test(ctx.session.lastSaid);
+  if (isYes(text) && !askedToEnd) return ctx.say("Sure. If you have another parcel to reschedule, tell me its tracking ID.");
   sayGoodbye(ctx);
 }
 

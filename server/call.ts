@@ -87,6 +87,8 @@ export function startCall(
     send({ type: "state", stage: session.stage, trackingId: session.trackingId, idConfirmed: session.idConfirmed, bookings: backend.bookings.size });
 
   let hangingUp = false;
+  // How many times the agent checked "anything else?" after the booking.
+  let doneChecks = 0;
 
   const deps: Deps = {
     backend,
@@ -97,16 +99,26 @@ export function startCall(
   };
 
   // Lets the goodbye finish playing, then tells the page to end the call.
+  // If the caller speaks during the goodbye, interrupt() cancels this and the call carries on.
+  let hangUpTimer: ReturnType<typeof setTimeout> | undefined;
   function hangUp() {
     if (hangingUp) return;
     hangingUp = true;
     clearTimeout(silenceTimer);
     void speechQueue.then(() => {
-      setTimeout(() => {
+      if (!hangingUp) return;
+      hangUpTimer = setTimeout(() => {
         tell("good", "The agent ended the call after saying goodbye", "CALL");
         send({ type: "hangup" });
       }, Math.max(0, speakingUntil - Date.now()));
     });
+  }
+
+  function cancelHangUp() {
+    if (!hangingUp) return;
+    hangingUp = false;
+    clearTimeout(hangUpTimer);
+    tell("info", "The caller spoke during the goodbye, so the agent kept the line open", "CALL");
   }
 
   // Shows a line in the browser timeline and in the server terminal.
@@ -175,9 +187,15 @@ export function startCall(
   function waitForCaller() {
     clearTimeout(silenceTimer);
     if (hangingUp) return;
-    // After the booking, silence means the caller is done, so say goodbye instead of nagging.
+    // The wait only starts once the agent has finished speaking.
+    const afterSpeech = Math.max(0, speakingUntil - Date.now());
+    // After the booking, silence means the caller is probably done. Check once, then say goodbye.
     if (session.stage === "DONE") {
-      silenceTimer = setTimeout(() => sayGoodbye({ session, deps, say: speak }), silenceMs);
+      silenceTimer = setTimeout(() => {
+        if (isSpeaking() || session.busy) return waitForCaller();
+        if (doneChecks++ === 0) return speak("Is there anything else, or shall I end the call?", true);
+        sayGoodbye({ session, deps, say: speak });
+      }, silenceMs + afterSpeech);
       return;
     }
     if (reminders >= MAX_REMINDERS) return;
@@ -199,6 +217,7 @@ export function startCall(
     sentencesQueued = 0;
     speakingUntil = 0;
     cutIn = true;
+    cancelHangUp();
     clearTimeout(recoverTimer);
     recoverTimer = setTimeout(recover, recoverMs);
     send({ type: "stop_audio" });
@@ -262,6 +281,8 @@ export function startCall(
   // Speech the agent will answer.
   function accept(text: string, confidence: number, endOfSpeech: boolean) {
     backgroundChunks = 0;
+    doneChecks = 0;
+    cancelHangUp();
 
     reminders = 0;
     clearTimeout(silenceTimer);
@@ -353,6 +374,7 @@ export function startCall(
       clearTimeout(silenceTimer);
       clearTimeout(holdTimer);
       clearTimeout(recoverTimer);
+      clearTimeout(hangUpTimer);
       stt.close();
     },
   };

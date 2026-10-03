@@ -345,8 +345,8 @@ test("after a booking, the agent asks if there is anything else, and a no ends t
   expect(call.types()).toContain("hangup");
 }, 15000);
 
-test("after a booking, silence ends the call with a goodbye instead of nagging", async () => {
-  const call = setup(1500);
+async function toBooked(silenceMs?: number) {
+  const call = setup(silenceMs);
   const say = async (text: string) => {
     call.handlers().onFinal(text, 1, true);
     await sleep(700);
@@ -356,10 +356,50 @@ test("after a booking, silence ends the call with a goodbye instead of nagging",
   await say("yes");
   await say("the second one");
   await say("yes");
-  await sleep(2600);
-  expect(call.spoken().some((text) => text.includes("cannot hear you"))).toBe(false);
+  return { ...call, say };
+}
+
+test("after a booking, silence first gets one check, then a goodbye, never a sudden hang-up", async () => {
+  const call = await toBooked(1500);
+  expect(call.spoken().at(-1)).toContain("anything else");
+
+  await sleep(1000);
+  expect(call.types()).not.toContain("hangup");
+  expect(call.spoken().at(-1)).toContain("anything else");
+
+  await sleep(1200);
+  expect(call.spoken().at(-1)).toBe("Is there anything else, or shall I end the call?");
+  expect(call.types()).not.toContain("hangup");
+
+  await sleep(2000);
   expect(call.spoken().at(-1)).toContain("Goodbye");
   expect(call.types()).toContain("hangup");
+  expect(call.spoken().some((text) => text.includes("cannot hear you"))).toBe(false);
+}, 20000);
+
+test("the wait for an answer only starts once the agent has finished speaking", async () => {
+  const call = await toBooked(1500);
+  // The fake voice takes about 0.4 s per sentence, so nothing should happen before speech plus the full wait.
+  await sleep(1200);
+  expect(call.spoken().at(-1)).toContain("anything else");
+}, 15000);
+
+test("speaking during the goodbye cancels the hang-up and the agent listens", async () => {
+  const call = await toBooked();
+  call.handlers().onFinal("no thanks", 1, true);
+  await sleep(150);
+  expect(call.spoken().at(-1)).toContain("Goodbye");
+  call.handlers().onInterim("wait");
+  await call.say("wait I have another parcel");
+  await sleep(500);
+  expect(call.types()).not.toContain("hangup");
+}, 15000);
+
+test("yes to shall I end the call ends it, yes to anything else keeps going", async () => {
+  const call = await toBooked();
+  await call.say("yes");
+  expect(call.spoken().at(-1)).toContain("another parcel");
+  expect(call.types()).not.toContain("hangup");
 }, 15000);
 
 test("short clear speech that matches no rule is checked with the LLM before it is ignored", async () => {
