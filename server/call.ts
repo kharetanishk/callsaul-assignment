@@ -97,6 +97,8 @@ export function startCall(
     send({ type: "state", stage: session.stage, trackingId: session.trackingId, idConfirmed: session.idConfirmed, bookings: backend.bookings.size });
 
   let hangingUp = false;
+  // The last sentence sent to the voice, so the next one continues in the same tone.
+  let lastSpoken = "";
   // How many times the agent checked "anything else?" after the booking.
   let doneChecks = 0;
 
@@ -157,13 +159,19 @@ export function startCall(
 
   async function streamSpeech(text: string, cancelled: AbortSignal) {
     if (cancelled.aborted) return;
+    const previousSpoken = lastSpoken;
+    lastSpoken = text;
 
     const requestedAt = Date.now();
     let firstAudioAt = requestedAt;
     let bytes = 0;
     try {
       const request = AbortSignal.any([cancelled, AbortSignal.timeout(SPEECH_TIMEOUT_MS)]);
-      for await (const chunk of services.synthesize(text, request, voice)) {
+      for await (const chunk of services.synthesize(text, request, {
+        voice,
+        previous: previousSpoken,
+        onFallback: (reason) => tell("warn", `The ElevenLabs voice failed twice (${reason}), so this sentence used the Deepgram voice`, "VOICE"),
+      })) {
         if (cancelled.aborted) return;
         if (bytes === 0) {
           firstAudioAt = Date.now();
