@@ -52,7 +52,7 @@ export function App() {
 
       <header className="relative z-10 mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <div className="flex items-center gap-3">
-          <span className="size-9 rounded-full bg-[radial-gradient(circle_at_32%_28%,#fff,var(--color-gold-bright)_28%,var(--color-peach)_62%,#d98543)] shadow-[0_8px_20px_-6px_var(--shadow),inset_0_-3px_6px_rgba(190,100,50,0.35)]" />
+          <span className="size-9 rounded-full bg-[radial-gradient(circle,#ffd9a8_0.9px,transparent_1.5px)] bg-[length:4px_4px] shadow-[0_8px_20px_-8px_var(--shadow)] [mask-image:radial-gradient(circle_at_32%_28%,#000_5%,rgba(0,0,0,0.25)_100%)]" />
           <div>
             <h1 className="text-lg font-bold tracking-tight">Reschedule a Delivery</h1>
             <p className="text-xs text-muted">Move your courier delivery to a new slot, just by talking.</p>

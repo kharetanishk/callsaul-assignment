@@ -117,33 +117,33 @@ function drawHalo(c: CanvasRenderingContext2D, x: number, y: number, r: number, 
   c.fillRect(x - r * 2.2, y - r * 2.2, r * 4.4, r * 4.4);
 }
 
-// The glass-like sphere in the middle, lit from the top left.
+// The sphere is a rotating dot-matrix globe lit from the top left: dots are bigger and brighter where light hits.
+const DOTS = 900;
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+const SPHERE = Array.from({ length: DOTS }, (_, i) => {
+  const y = 1 - ((i + 0.5) / DOTS) * 2;
+  const ring = Math.sqrt(1 - y * y);
+  return [Math.cos(i * GOLDEN) * ring, y, Math.sin(i * GOLDEN) * ring] as const;
+});
+
 function drawBody(c: CanvasRenderingContext2D, x: number, y: number, r: number, t: number) {
   const body = r * 0.8;
-  const drift = Math.sin(t * 0.6) * body * 0.04;
-  const gradient = c.createRadialGradient(x - body * 0.35 + drift, y - body * 0.4, body * 0.05, x, y, body);
-  gradient.addColorStop(0, "rgba(255, 252, 245, 0.95)");
-  gradient.addColorStop(0.35, "rgba(255, 207, 170, 0.85)");
-  gradient.addColorStop(0.75, "rgba(240, 150, 100, 0.8)");
-  gradient.addColorStop(1, "rgba(190, 100, 60, 0.85)");
-  c.fillStyle = gradient;
-  c.beginPath();
-  c.arc(x, y, body, 0, TAU);
-  c.fill();
-
-  const shine = c.createRadialGradient(x - body * 0.38, y - body * 0.45, 0, x - body * 0.38, y - body * 0.45, body * 0.5);
-  shine.addColorStop(0, "rgba(255, 255, 255, 0.75)");
-  shine.addColorStop(1, "rgba(255, 255, 255, 0)");
-  c.fillStyle = shine;
-  c.beginPath();
-  c.arc(x, y, body, 0, TAU);
-  c.fill();
-
-  c.strokeStyle = "rgba(255, 245, 225, 0.55)";
-  c.lineWidth = 1.5;
-  c.beginPath();
-  c.arc(x, y, body - 1, 0, TAU);
-  c.stroke();
+  const cos = Math.cos(t * 0.3);
+  const sin = Math.sin(t * 0.3);
+  const dot = body * 0.017;
+  for (const [px, py, pz] of SPHERE) {
+    const rx = px * cos + pz * sin;
+    const rz = -px * sin + pz * cos;
+    const light = Math.max(0, rx * -0.4 + py * -0.5 + rz * 0.77);
+    const front = rz > 0;
+    const size = dot * (front ? 0.6 + light * 1.1 : 0.45);
+    c.fillStyle = front
+      ? `rgba(${Math.round(225 + light * 30)}, ${Math.round(140 + light * 110)}, ${Math.round(95 + light * 130)}, ${0.45 + light * 0.55})`
+      : "rgba(210, 130, 90, 0.16)";
+    c.beginPath();
+    c.arc(x + rx * body, y + py * body, size, 0, TAU);
+    c.fill();
+  }
 }
 
 // Expanding circles that show the orb is hearing the caller.
