@@ -24,9 +24,6 @@ function deepgram(text: string, signal: AbortSignal) {
   }).then(body);
 }
 
-// The same settings on every sentence keep the voice sounding like one person. Each sentence is its own request,
-// so without them the voice drifts: default stability lets it vary on purpose, and automatic language detection can
-// change the accent on short pieces like "Sunday 1 PM".
 const ELEVENLABS_SETTINGS = {
   language_code: "en",
   seed: 7,
@@ -39,7 +36,6 @@ function elevenlabs(text: string, signal: AbortSignal, previous: string) {
   return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream?output_format=pcm_${TTS_SAMPLE_RATE}`, {
     method: "POST",
     headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY!, "Content-Type": "application/json" },
-    // The sentence before this one lets the voice carry on in the same tone instead of starting fresh.
     body: JSON.stringify({ text, model_id: model, previous_text: previous || undefined, ...ELEVENLABS_SETTINGS }),
     signal,
   }).then(body);

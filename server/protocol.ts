@@ -1,4 +1,3 @@
-// Messages the server sends to the browser as JSON. Audio is sent as binary frames instead.
 import type { LogKind } from "./booking";
 import type { Mode } from "./fakeBackend";
 import type { Stage } from "./session";
@@ -12,9 +11,7 @@ export type ServerMessage =
   | { type: "state"; stage: Stage; trackingId: string; idConfirmed: boolean; bookings: number }
   | { type: "backend"; mode: Mode; text: string }
   | { type: "stop_audio" }
-  // The agent said goodbye and finished speaking, so the page should end the call.
   | { type: "hangup" }
   | { type: "speak_fallback"; text: string };
 
-// Messages the browser sends as JSON. Audio is sent as binary frames instead.
 export type ClientMessage = { type: "hangup" };

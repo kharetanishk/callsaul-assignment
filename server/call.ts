@@ -36,7 +36,7 @@ const STILL_TALKING_RECHECK_MS = 400;
 const SPEECH_TIMEOUT_MS = 15_000;
 // Extra time after the computed end of speech, to cover network and playback delay.
 const PLAYBACK_MARGIN_MS = 300;
-// If the caller says nothing this long after the agent finishes, the agent says it cannot hear them.
+// agar user shant rha , agent ke answer finish krne ke itne time tak , so agent will say ki i cannot hear ...
 const SILENCE_MS = 8000;
 const MAX_REMINDERS = 3;
 // After the caller cuts in, how long to wait for something useful before taking the floor back.
